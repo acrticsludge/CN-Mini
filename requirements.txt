@@ -1,0 +1,9 @@
+# Distributed Backup System — Requirements
+
+ryu>=4.34
+flask>=2.0
+flask-socketio>=5.0
+pytest>=7.0
+matplotlib>=3.5
+networkx>=2.8
+mininet>=2.3

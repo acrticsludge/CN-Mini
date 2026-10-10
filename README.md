@@ -21,7 +21,7 @@ A distributed backup application where clients transfer files to backup servers 
 
 ```bash
 sudo apt install mininet openvswitch-switch
-pip install ryu flask flask-socketio pytest matplotlib
+pip install -r requirements.txt
 ```
 
 ### 2. Start the system
@@ -66,3 +66,35 @@ docs/          — Design spec, runbook, architecture, results
 ```
 
 ---
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+---
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — System design and component details
+- [Test Cases](docs/test-cases.md) — Test scenarios and expected results
+- [Results](docs/results.md) — Performance metrics and comparison
+- [Design Spec](docs/reasonix/specs/2026-01-07-distributed-backup-design.md) — Full design rationale
+- [Runbook](docs/runbook/MASTER.md) — How the system runs
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Language | Python 3.8+ |
+| Network Emulation | Mininet |
+| SDN Controller | Ryu |
+| Switch Dataplane | Open vSwitch (OpenFlow 1.3) |
+| Web Backend | Flask + Flask-SocketIO |
+| Web Frontend | Vanilla JS + SVG + Chart.js |
+| Checksum | zlib.crc32 |
+| Persistence | bind-mount |
+| Testing | pytest |
