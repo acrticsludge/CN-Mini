@@ -1,20 +1,9 @@
-.venv312/
+# Python
 __pycache__/
 *.py[cod]
-.env
 .venv312/
-__pycache__/
-*.py[cod]
 .env
-.venv312/
-__pycache__/
-*.py[cod]
-.env
-.venv312/
-__pycache__/
-*.py[cod]
-.env
-.venv312/
-__pycache__/
-*.py[cod]
-.env
+
+# Runtime data — generated at run time, never committed
+shared_files/
+stored_files/
