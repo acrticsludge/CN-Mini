@@ -21,8 +21,8 @@ SHARED_DIR = '/tmp/shared' if os.path.isdir('/tmp/shared') else os.path.join(BAS
 REQUEST_FILE = os.path.join(SHARED_DIR, 'transfer_request.json')
 RESULT_FILE = os.path.join(SHARED_DIR, 'transfer_result.json')
 
-SERVERS = ['10.0.0.3:9000', '10.0.0.4:9000']
-POLL_INTERVAL = 1.0
+SERVERS = os.environ.get('BACKUP_SERVERS', '10.0.0.3:9000,10.0.0.4:9000').split(',')
+POLL_INTERVAL = float(os.environ.get('BRIDGE_POLL_INTERVAL', '1.0'))
 
 
 def process_request(request):

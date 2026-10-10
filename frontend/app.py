@@ -32,9 +32,25 @@ transfer_state = {
     'throughput': 0.0,
     'start_time': None,
     'recovery_time': None,
+    'result': None,
 }
 
 event_log = []
+
+
+def _sync_transfer_state():
+    """Fold the bridge's result into transfer_state so the dashboard can show progress."""
+    try:
+        if os.path.exists(RESULT_FILE):
+            with open(RESULT_FILE) as f:
+                result = json.load(f)
+            if result.get('filename') == transfer_state['filename']:
+                transfer_state['running'] = False
+                if result.get('status') == 'done':
+                    transfer_state['progress'] = 100
+                transfer_state['result'] = result
+    except Exception:
+        pass
 
 
 def log_event(message):
@@ -86,7 +102,6 @@ def transfer_result():
         with open(RESULT_FILE) as f:
             return jsonify(json.load(f))
     return jsonify({'status': 'none'})
-
 
 @app.route('/api/start-transfer', methods=['POST'])
 def start_transfer():
@@ -153,6 +168,7 @@ def link_up():
 @app.route('/api/status')
 def get_status():
     """Get current system status."""
+    _sync_transfer_state()
     return jsonify({
         'transfer': transfer_state,
         'events': event_log[-20:],

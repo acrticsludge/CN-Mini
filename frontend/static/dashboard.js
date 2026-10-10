@@ -121,9 +121,17 @@ function updateProgress(state) {
     const throughput = document.getElementById('throughput-value');
 
     bar.style.width = `${state.progress}%`;
-    text.textContent = state.running
-        ? `Transferring ${state.filename}: ${state.progress.toFixed(1)}%`
-        : 'No transfer running';
+    if (state.running) {
+        text.textContent = `Transferring ${state.filename}: ${state.progress.toFixed(1)}%`;
+    } else if (state.result && state.result.status === 'done') {
+        text.textContent = `Transfer complete: ${state.filename} (CRC32 verified)`;
+    } else if (state.result && state.result.status === 'failed') {
+        text.textContent = `Transfer failed: ${state.filename} — ${state.result.error || 'unknown error'}`;
+    } else if (state.filename) {
+        text.textContent = `Last transfer: ${state.filename}`;
+    } else {
+        text.textContent = 'No transfer running';
+    }
     chunks.textContent = `${state.chunks_sent} / ${state.total_chunks}`;
     throughput.textContent = `${state.throughput.toFixed(1)} KB/s`;
 
@@ -232,6 +240,9 @@ setInterval(async () => {
         try {
             const st = await fetch('/api/status');
             const sdata = await st.json();
+            if (sdata.transfer) {
+                updateProgress(sdata.transfer);
+            }
             const eventLog = document.getElementById('event-log');
             eventLog.innerHTML = '';
             for (const entry of sdata.events) {
