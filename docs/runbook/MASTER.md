@@ -295,4 +295,41 @@ Client ◄──ACK (2)──────────────── Server
 
 ---
 
+## 10. Rubric Alignment
+
+| Rubric Component | Marks | Where It's Addressed |
+|------------------|-------|---------------------|
+| Problem Understanding & Architecture | 2 | Section 5 (architecture), `docs/architecture.md` |
+| TCP/UDP Socket Implementation | 4 | Section 4.1–4.5 (client/server, chunking, checksums, recovery, multi-server) |
+| Mininet + SDN Implementation | 4 | Section 3.3 (topology), Section 4.6 (SDN controller) |
+| Socket–SDN Integration | 3 | Section 4.6 + 4.8 (controller reroutes during active transfer) |
+| Initial Testing & Demo | 2 | Section 9 (demo script), `tests/` |
+| Complete Application Functionality | 4 | All 8 features implemented (Section 4) |
+| Dynamic SDN Functionality | 6 | Rerouting, monitoring, recovery, routing (Section 4.6) |
+| Challenging Scenario | 4 | Link failure + automatic rerouting (Section 5) |
+| Performance Evaluation | 5 | Section 8 (metrics, experiments, comparison) |
+| Documentation & Viva | 6 | This file + spec + README + architecture.md + test-cases.md + results.md |
+
+### Dynamic SDN Mechanisms Implemented
+
+| Mechanism | How |
+|-----------|-----|
+| **Rerouting** | Link failure → Dijkstra recomputation → new flow rules |
+| **Monitoring** | Flow stats polled every 5s for congestion detection |
+| **Recovery** | Link up event → controller restores optimal path |
+| **Routing** | Dijkstra shortest-path for all flow installations |
+
+### Viva Prep — Key Questions to Be Ready For
+
+1. **Why Ryu over POX?** — Python-native, active maintenance, clean API, student-friendly docs
+2. **Why binary protocol over JSON?** — Efficiency, demonstrates real protocol design, not a web project
+3. **Why CRC32 over MD5/SHA?** — Network integrity is not security; CRC32 is fast and zero-dependency
+4. **How does the app interact with the SDN controller?** — It doesn't directly; the controller observes and controls the network below. Integration is behavioral.
+5. **How does recovery work?** — Server tracks last ACKed chunk; client sends RESUME with that index; transfer continues from there
+6. **What happens when a link fails?** — OpenFlow port status event → controller recomputes path → installs new flows → traffic reroutes
+7. **Why bind-mount for persistence?** — Mininet hosts use tmpfs (ephemeral); bind-mount gives true persistence across restarts
+8. **What's the recovery time?** — Typically 1-2 seconds from link down to traffic flowing on new path
+
+---
+
 _This is the master reference. For design rationale, see `docs/reasonix/specs/2026-01-07-distributed-backup-design.md`._

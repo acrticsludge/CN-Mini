@@ -439,7 +439,45 @@ distributed-backup-system/
 
 ---
 
-## 7. Out of Scope (Explicitly)
+## 7. Rubric Alignment
+
+| Rubric Component | Marks | How This Project Addresses It |
+|------------------|-------|-------------------------------|
+| Problem Understanding & Architecture | 2 | Clear architecture (section 1), well-defined components, communication flow, expected network behavior |
+| TCP/UDP Socket Implementation | 4 | Low-level TCP sockets, client/server model, threading for concurrency, error handling on all ops, custom binary protocol with message types |
+| Mininet + SDN Implementation | 4 | 4-switch partial mesh, Ryu controller with LLDP discovery, OpenFlow 1.3 flow rules, `pingall` verified |
+| Socket–SDN Integration | 3 | Controller observes network events and reroutes TCP traffic; dashboard shows both simultaneously; end-to-end demo: link failure during transfer → rerouting → resume |
+| Initial Testing & Demo | 2 | `pytest tests/` covers transfer, recovery, failure; all pass before demo |
+| Complete Application Functionality | 4 | All 8 required features: TCP transfer, chunking, checksums, resume, multiple servers, path selection, failure simulation, metrics |
+| Dynamic SDN Functionality | 6 | **Rerouting** (link failure → Dijkstra recomputation), **monitoring** (flow stats polling), **recovery** (path restoration), **routing** (Dijkstra shortest path) |
+| Challenging Scenario / Robustness | 4 | Link failure during active transfer — controller detects, reroutes, transfer resumes with zero data loss |
+| Performance Evaluation & Comparison | 5 | Throughput + recovery time measured; experiments: normal, link failure with SDN, link failure without SDN (static baseline); comparison table |
+| Documentation, Final Demo & Viva | 6 | README, architecture.md, test-cases.md, results.md, MASTER.md, spec — all written; reproducible demo; viva-ready |
+
+### Dynamic SDN Mechanisms Implemented
+
+The rubric lists: routing, filtering, prioritization, load balancing, rerouting, monitoring, blocking, recovery.
+
+| Mechanism | Implemented | How |
+|-----------|-------------|-----|
+| **Rerouting** | Yes | Link failure → Dijkstra recomputation → new flow rules |
+| **Monitoring** | Yes | Flow stats polled every 5s for congestion detection |
+| **Recovery** | Yes | Link up event → controller restores optimal path |
+| **Routing** | Yes | Dijkstra shortest-path for all flow installations |
+| Filtering | No | Not needed for this project |
+| Prioritization | No | Not needed for this project |
+| Load balancing | No | Primary-backup failover at app level instead |
+| Blocking | No | Not needed for this project |
+
+### Socket-SDN Integration Points
+
+1. **Network event → SDN action:** Link down event triggers controller rerouting (visible during active transfer)
+2. **Application state → Dashboard:** Transfer progress, chunk count, throughput shown live alongside network state
+3. **End-to-end demonstration:** "Trigger Link Failure" during transfer → controller reroutes → transfer resumes — both layers visible simultaneously
+
+---
+
+## 8. Out of Scope (Explicitly)
 
 - UDP (TCP is mandatory)
 - Real network deployment (everything runs in Mininet)
