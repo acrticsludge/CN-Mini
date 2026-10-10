@@ -70,7 +70,7 @@ class BackupClient:
             return False
 
         # Receive ready ACK
-        ack_frame = self.recv_frame()
+        ack_frame = recv_frame(self.sock)
         if ack_frame is None or ack_frame['type'] != MSG_ACK:
             print("[CLIENT] Did not receive ready ACK")
             return False
@@ -79,14 +79,16 @@ class BackupClient:
         if resume_from > 0 and self.last_ack >= 0:
             resume_frame = pack_resume(self.last_ack)
             self.sock.sendall(resume_frame)
-            ack_frame = self.recv_frame()
+            ack_frame = recv_frame(self.sock)
             if ack_frame is None or ack_frame['type'] != MSG_ACK:
                 print("[CLIENT] Did not receive RESUME ACK")
                 return False
             print(f"[CLIENT] Resuming from chunk {self.last_ack + 1}")
 
-        # Send chunks
-        start_chunk = resume_from if resume_from > 0 else 0
+        return self._send_chunks(filepath, start_chunk, total_chunks)
+
+    def _send_chunks(self, filepath, start_chunk, total_chunks):
+        """Send file chunks from start_chunk to total_chunks. Returns True on success."""
         bytes_sent = start_chunk * self.chunk_size
         start_time = time.time()
 
@@ -108,7 +110,7 @@ class BackupClient:
                     return False
 
                 # Wait for ACK
-                ack_frame = self.recv_frame()
+                ack_frame = recv_frame(self.sock)
                 if ack_frame is None:
                     print(f"[CLIENT] No ACK received for chunk {chunk_index}")
                     self.last_ack = chunk_index - 1
@@ -125,6 +127,7 @@ class BackupClient:
 
         elapsed = time.time() - start_time
         throughput = bytes_sent / elapsed / 1024 if elapsed > 0 else 0
+        filename = os.path.basename(filepath)
         print(f"[CLIENT] Transfer complete: {filename} "
               f"({bytes_sent} bytes in {elapsed:.2f}s, {throughput:.1f} KB/s)")
         return True

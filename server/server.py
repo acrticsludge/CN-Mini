@@ -90,7 +90,7 @@ class ClientHandler(threading.Thread):
         self.received_chunks += 1
         self.send_ack(frame['index'])
         if self.received_chunks >= self.total_chunks:
-            elapsed = time.time() - getattr(self, '_start_time', time.time())
+            elapsed = time.time() - self._start_time
             print(f"[SERVER] Transfer complete: {self.filename} "
                   f"({self.received_chunks} chunks)")
 
