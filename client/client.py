@@ -10,8 +10,12 @@ import time
 import struct
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from common.protocol import *
+from common.protocol import (
+    HEADER_SIZE, MSG_ACK, CHUNK_SIZE,
+    pack_frame, unpack_header, pack_hello, pack_data, pack_resume,
+)
 from common.checksum import compute_crc32
+from common.transport import recv_all, recv_frame
 
 
 class BackupClient:
@@ -72,7 +76,7 @@ class BackupClient:
             return False
 
         # If resuming, send RESUME first
-        if resume_from > 0:
+        if resume_from > 0 and self.last_ack >= 0:
             resume_frame = pack_resume(self.last_ack)
             self.sock.sendall(resume_frame)
             ack_frame = self.recv_frame()
@@ -124,38 +128,6 @@ class BackupClient:
         print(f"[CLIENT] Transfer complete: {filename} "
               f"({bytes_sent} bytes in {elapsed:.2f}s, {throughput:.1f} KB/s)")
         return True
-
-    def recv_frame(self):
-        """Receive a complete frame from the server."""
-        header = self.recv_all(HEADER_SIZE)
-        if header is None:
-            return None
-        result = unpack_header(header)
-        if result is None:
-            return None
-        msg_type, index, total_chunks, checksum, data_len = result
-        payload = self.recv_all(data_len) if data_len > 0 else b''
-        return {
-            'type': msg_type,
-            'index': index,
-            'total_chunks': total_chunks,
-            'checksum': checksum,
-            'data_len': data_len,
-            'payload': payload,
-        }
-
-    def recv_all(self, n):
-        """Receive exactly n bytes from the socket."""
-        data = b''
-        while len(data) < n:
-            try:
-                chunk = self.sock.recv(n - len(data))
-                if not chunk:
-                    return None
-                data += chunk
-            except OSError:
-                return None
-        return data
 
     def close(self):
         """Close the connection."""

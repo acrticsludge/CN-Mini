@@ -32,7 +32,6 @@ const throughputChart = new Chart(ctx, {
 
 // State
 let throughputData = [];
-let labelCount = 0;
 
 // Socket events
 socket.on('connect', () => {
@@ -116,7 +115,6 @@ function updateProgress(state) {
 
     // Update chart
     throughputData.push(state.throughput);
-    labelCount++;
     if (throughputData.length > 50) throughputData.shift();
     throughputChart.data.labels = Array.from({ length: throughputData.length }, (_, i) => i);
     throughputChart.data.datasets[0].data = throughputData;

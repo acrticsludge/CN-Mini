@@ -4,14 +4,12 @@ Serves a single-page app with live topology, transfer control, metrics, and even
 """
 
 import os
-import json
-import subprocess
 import time
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'distributed-backup-secret'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-key-not-for-prod')
 socketio = SocketIO(app, cors_allowed_origins='*')
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
@@ -67,6 +65,11 @@ def start_transfer():
     data = request.get_json()
     filename = data.get('filename', 'test_file.bin')
     file_path = data.get('file_path', os.path.join(BASE_DIR, 'test_file.bin'))
+
+    # Validate file path to prevent directory traversal
+    real_path = os.path.realpath(file_path)
+    if '..' in file_path or not real_path.startswith(os.path.realpath(BASE_DIR)):
+        return jsonify({'error': 'Invalid file path'}), 400
 
     transfer_state['running'] = True
     transfer_state['filename'] = filename

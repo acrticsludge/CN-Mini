@@ -92,7 +92,9 @@ def pack_ack(chunk_index: int) -> bytes:
 
 
 def unpack_ack(payload: bytes) -> int:
-    """Parse ACK payload to get the acknowledged chunk index."""
+    """Parse ACK payload to get the acknowledged chunk index. Returns -1 on error."""
+    if len(payload) != 4:
+        return -1
     return struct.unpack('!I', payload)[0]
 
 
@@ -103,5 +105,7 @@ def pack_resume(last_ack: int) -> bytes:
 
 
 def unpack_resume(payload: bytes) -> int:
-    """Parse RESUME payload to get the last acknowledged chunk index."""
+    """Parse RESUME payload to get the last acknowledged chunk index. Returns -1 on error."""
+    if len(payload) != 4:
+        return -1
     return struct.unpack('!I', payload)[0]

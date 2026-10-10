@@ -14,9 +14,7 @@ from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib import hub
-from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link, get_host
-from ryu.lib.packet import packet, ethernet
 import networkx as nx
 
 
@@ -30,7 +28,6 @@ class SDNController(app_manager.RyuApp):
         self.topology = nx.Graph()
         self.datapaths = {}
         self.monitor_thread = hub.spawn(self._monitor)
-        self.mac_to_port = {}
 
     # ---- Switch Features ----
 
@@ -38,7 +35,7 @@ class SDNController(app_manager.RyuApp):
     def switch_features_handler(self, ev):
         """Install table-miss flow entry on switch connect."""
         datapath = ev.msg.datapath
-        self.datapaths[datath.id] = datapath
+        self.datapaths[datapath.id] = datapath
         self._install_table_miss(datapath)
         self.logger.info("Switch %d connected", datapath.id)
 
@@ -181,5 +178,7 @@ class SDNController(app_manager.RyuApp):
         """Process flow stats replies for congestion detection."""
         body = ev.msg.body
         for stat in body:
-            # Could implement congestion detection here by checking packet counts
-            pass
+            packet_count = stat.packet_count
+            if packet_count > 10000:
+                self.logger.warning("Congestion detected: flow %s has %d packets",
+                                    stat.match, packet_count)

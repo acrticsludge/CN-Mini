@@ -12,8 +12,12 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from common.protocol import *
-from common.checksum import compute_crc32, verify_crc32
+from common.protocol import (
+    HEADER_SIZE, MSG_HELLO, MSG_DATA, MSG_RESUME, MSG_ACK, CHUNK_SIZE,
+    pack_frame, unpack_header, unpack_frame, pack_hello, pack_data, pack_ack,
+)
+from common.checksum import verify_crc32
+from common.transport import recv_all, recv_frame
 
 
 class ClientHandler(threading.Thread):
@@ -35,7 +39,7 @@ class ClientHandler(threading.Thread):
     def run(self):
         try:
             while self.running:
-                frame = self.recv_frame()
+                frame = recv_frame(self.conn)
                 if frame is None:
                     break
                 self.handle_frame(frame)
@@ -43,38 +47,6 @@ class ClientHandler(threading.Thread):
             print(f"[SERVER] Error handling {self.addr}: {e}")
         finally:
             self.cleanup()
-
-    def recv_frame(self):
-        """Receive a complete frame (header + payload) from the socket."""
-        header = self.recv_all(HEADER_SIZE)
-        if header is None:
-            return None
-        result = unpack_header(header)
-        if result is None:
-            return None
-        msg_type, index, total_chunks, checksum, data_len = result
-        payload = self.recv_all(data_len) if data_len > 0 else b''
-        return {
-            'type': msg_type,
-            'index': index,
-            'total_chunks': total_chunks,
-            'checksum': checksum,
-            'data_len': data_len,
-            'payload': payload,
-        }
-
-    def recv_all(self, n):
-        """Receive exactly n bytes from the socket."""
-        data = b''
-        while len(data) < n:
-            try:
-                chunk = self.conn.recv(n - len(data))
-                if not chunk:
-                    return None
-                data += chunk
-            except OSError:
-                return None
-        return data
 
     def handle_frame(self, frame):
         """Dispatch a received frame based on its message type."""
@@ -96,6 +68,8 @@ class ClientHandler(threading.Thread):
         self.output_path = os.path.join(self.storage_dir, self.filename)
         os.makedirs(self.storage_dir, exist_ok=True)
         self.file_handle = open(self.output_path, 'wb')
+        self._start_time = time.time()
+        self._file_pos = 0
         self.send_ack(0)
         print(f"[SERVER] Receiving '{self.filename}' ({self.file_size} bytes, "
               f"{self.total_chunks} chunks) from {self.addr}")
@@ -109,8 +83,10 @@ class ClientHandler(threading.Thread):
         if not verify_crc32(payload, expected_checksum):
             print(f"[SERVER] CRC32 mismatch on chunk {frame['index']}, dropping")
             return
+        self.file_handle.seek(self._file_pos)
         self.file_handle.write(payload)
         self.file_handle.flush()
+        self._file_pos += len(payload)
         self.received_chunks += 1
         self.send_ack(frame['index'])
         if self.received_chunks >= self.total_chunks:

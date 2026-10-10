@@ -1,5 +1,5 @@
 """
-Mininet topology: 4 OVS switches in partial mesh, 4 hosts.
+Mininet topology: 4 OVS switches in full mesh, 4 hosts.
 h1, h2 = clients (senders)
 h3, h4 = backup servers (receivers)
 
@@ -9,7 +9,7 @@ so files persist across Mininet restarts.
 
 import os
 from mininet.net import Mininet
-from mininet.node import OVSSwitch, Host
+from mininet.node import OVSSwitch
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
