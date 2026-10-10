@@ -3,11 +3,13 @@
  * transfer control, metrics charts, file listing.
  */
 
-const socket = io();
+// Live updates via WebSocket when the client library loads; REST polling covers the rest.
+let socket = null;
+try { socket = io(); } catch (e) { socket = null; }
 const ctx = document.getElementById('throughput-chart').getContext('2d');
 
 // Throughput chart
-const throughputChart = new Chart(ctx, {
+const throughputChart = (typeof Chart === 'undefined') ? null : new Chart(ctx, {
     type: 'line',
     data: {
         labels: [],
@@ -35,7 +37,8 @@ let throughputData = [];
 let selectedFile = null;
 let lastResultSeen = null;
 
-// Socket events
+// Socket events (only when the library loaded; otherwise the polling below covers updates)
+if (socket) {
 socket.on('connect', () => {
     addEvent('Connected to server');
 });
@@ -52,6 +55,7 @@ socket.on('link_event', (data) => {
     updateLinkStatus(data.sw1, data.sw2, data.status);
     addEvent(`Link ${data.sw1} <-> ${data.sw2}: ${data.status}`);
 });
+}
 
 // Button handlers
 document.getElementById('btn-start').addEventListener('click', async () => {
@@ -123,12 +127,14 @@ function updateProgress(state) {
     chunks.textContent = `${state.chunks_sent} / ${state.total_chunks}`;
     throughput.textContent = `${state.throughput.toFixed(1)} KB/s`;
 
-    // Update chart
+    // Update chart (skipped when the chart library failed to load)
     throughputData.push(state.throughput);
     if (throughputData.length > 50) throughputData.shift();
-    throughputChart.data.labels = Array.from({ length: throughputData.length }, (_, i) => i);
-    throughputChart.data.datasets[0].data = throughputData;
-    throughputChart.update();
+    if (throughputChart) {
+        throughputChart.data.labels = Array.from({ length: throughputData.length }, (_, i) => i);
+        throughputChart.data.datasets[0].data = throughputData;
+        throughputChart.update();
+    }
 }
 
 function updateLinkStatus(sw1, sw2, status) {
@@ -222,4 +228,18 @@ setInterval(async () => {
             loadFiles();
         }
     } catch (e) { /* bridge result not available yet */ }
+    if (!socket) {
+        try {
+            const st = await fetch('/api/status');
+            const sdata = await st.json();
+            const eventLog = document.getElementById('event-log');
+            eventLog.innerHTML = '';
+            for (const entry of sdata.events) {
+                const div = document.createElement('div');
+                div.className = 'event-entry';
+                div.textContent = entry;
+                eventLog.appendChild(div);
+            }
+        } catch (e) { /* status not available yet */ }
+    }
 }, 2000);
