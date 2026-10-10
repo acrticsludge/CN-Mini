@@ -9,7 +9,7 @@ so files persist across Mininet restarts.
 
 import os
 from mininet.net import Mininet
-from mininet.node import OVSSwitch
+from mininet.node import OVSSwitch, RemoteController
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
@@ -17,7 +17,13 @@ from mininet.log import setLogLevel
 
 def create_topology():
     """Create and start the Mininet network topology."""
-    net = Mininet(switch=OVSSwitch, link=TCLink)
+    net = Mininet(controller=None, switch=OVSSwitch, link=TCLink)
+    net.addController(
+        'c0',
+        controller=RemoteController,
+        ip='127.0.0.1',
+        port=6633,
+    )
 
     # Add switches (OpenFlow 1.3)
     s1 = net.addSwitch('s1')
@@ -41,9 +47,6 @@ def create_topology():
     net.addLink(s1, s2)
     net.addLink(s1, s3)
     net.addLink(s1, s4)
-    net.addLink(s2, s3)
-    net.addLink(s2, s4)
-    net.addLink(s3, s4)
 
     net.start()
 

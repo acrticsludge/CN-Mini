@@ -2,7 +2,6 @@
 Flask web dashboard for the Distributed Backup System.
 Serves a single-page app with live topology, transfer control, metrics, and event log.
 """
-
 import os
 import time
 from flask import Flask, render_template, jsonify, request
@@ -10,7 +9,11 @@ from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-key-not-for-prod')
-socketio = SocketIO(app, cors_allowed_origins='*')
+socketio = SocketIO(
+    app,
+    cors_allowed_origins='*',
+    async_mode='threading'
+)
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 STORED_DIR = os.path.join(BASE_DIR, 'stored_files')
