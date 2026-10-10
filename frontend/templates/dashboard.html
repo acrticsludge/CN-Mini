@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Backup System — Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Distributed Backup System</h1>
+        <p>TCP File Transfer with SDN-based Failure Recovery</p>
+    </header>
+
+    <main>
+        <!-- Topology Panel -->
+        <section class="panel" id="topology-panel">
+            <h2>Network Topology</h2>
+            <svg id="topology-svg" viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+                <!-- Switches -->
+                <g id="switches">
+                    <rect x="200" y="50" width="80" height="50" rx="8" class="switch" id="sw-s1"/>
+                    <text x="240" y="80" text-anchor="middle" class="switch-label">s1</text>
+
+                    <rect x="400" y="50" width="80" height="50" rx="8" class="switch" id="sw-s2"/>
+                    <text x="440" y="80" text-anchor="middle" class="switch-label">s2</text>
+
+                    <rect x="200" y="250" width="80" height="50" rx="8" class="switch" id="sw-s3"/>
+                    <text x="240" y="280" text-anchor="middle" class="switch-label">s3</text>
+
+                    <rect x="400" y="250" width="80" height="50" rx="8" class="switch" id="sw-s4"/>
+                    <text x="440" y="280" text-anchor="middle" class="switch-label">s4</text>
+                </g>
+
+                <!-- Hosts -->
+                <g id="hosts">
+                    <rect x="50" y="50" width="80" height="50" rx="8" class="host client" id="host-h1"/>
+                    <text x="90" y="80" text-anchor="middle" class="host-label">h1</text>
+                    <text x="90" y="95" text-anchor="middle" class="host-role">client</text>
+
+                    <rect x="50" y="250" width="80" height="50" rx="8" class="host client" id="host-h2"/>
+                    <text x="90" y="280" text-anchor="middle" class="host-label">h2</text>
+                    <text x="90" y="295" text-anchor="middle" class="host-role">client</text>
+
+                    <rect x="520" y="50" width="80" height="50" rx="8" class="host server" id="host-h3"/>
+                    <text x="560" y="80" text-anchor="middle" class="host-label">h3</text>
+                    <text x="560" y="95" text-anchor="middle" class="host-role">server</text>
+
+                    <rect x="520" y="250" width="80" height="50" rx="8" class="host server" id="host-h4"/>
+                    <text x="560" y="280" text-anchor="middle" class="host-label">h4</text>
+                    <text x="560" y="295" text-anchor="middle" class="host-role">server</text>
+                </g>
+
+                <!-- Links -->
+                <g id="links">
+                    <line x1="130" y1="75" x2="200" y2="75" class="link" id="link-h1-s1"/>
+                    <line x1="130" y1="275" x2="200" y2="275" class="link" id="link-h2-s3"/>
+                    <line x1="480" y1="75" x2="520" y2="75" class="link" id="link-s2-h3"/>
+                    <line x1="480" y1="275" x2="520" y2="275" class="link" id="link-s4-h4"/>
+
+                    <line x1="280" y1="75" x2="400" y2="75" class="link" id="link-s1-s2"/>
+                    <line x1="280" y1="275" x2="400" y2="275" class="link" id="link-s3-s4"/>
+                    <line x1="240" y1="100" x2="240" y2="250" class="link" id="link-s1-s3"/>
+                    <line x1="440" y1="100" x2="440" y2="250" class="link" id="link-s2-s4"/>
+                    <line x1="280" y1="75" x2="400" y2="275" class="link" id="link-s1-s4"/>
+                    <line x1="400" y1="75" x2="280" y2="275" class="link" id="link-s2-s3"/>
+                </g>
+            </svg>
+        </section>
+
+        <!-- Transfer Control Panel -->
+        <section class="panel" id="control-panel">
+            <h2>Transfer Control</h2>
+            <div class="button-group">
+                <button id="btn-start" class="btn btn-primary">Start Transfer</button>
+                <button id="btn-stop" class="btn btn-danger">Stop Transfer</button>
+                <button id="btn-link-down" class="btn btn-warning">Trigger Link Failure</button>
+                <button id="btn-link-up" class="btn btn-success">Restore Link</button>
+            </div>
+            <div id="progress-container">
+                <div id="progress-bar"></div>
+            </div>
+            <p id="progress-text">No transfer running</p>
+        </section>
+
+        <!-- Metrics Panel -->
+        <section class="panel" id="metrics-panel">
+            <h2>Metrics</h2>
+            <div class="metric">
+                <span class="metric-label">Throughput:</span>
+                <span id="throughput-value" class="metric-value">0 KB/s</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Recovery Time:</span>
+                <span id="recovery-value" class="metric-value">N/A</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Chunks:</span>
+                <span id="chunks-value" class="metric-value">0 / 0</span>
+            </div>
+            <canvas id="throughput-chart" width="400" height="200"></canvas>
+        </section>
+
+        <!-- Stored Files Panel -->
+        <section class="panel" id="files-panel">
+            <h2>Stored Files</h2>
+            <div id="files-list">
+                <p>No files stored yet</p>
+            </div>
+            <button id="btn-refresh-files" class="btn btn-secondary">Refresh</button>
+        </section>
+
+        <!-- Event Log Panel -->
+        <section class="panel" id="events-panel">
+            <h2>Event Log</h2>
+            <div id="event-log"></div>
+        </section>
+    </main>
+
+    <script src="/static/dashboard.js"></script>
+</body>
+</html>

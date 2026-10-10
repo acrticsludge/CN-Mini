@@ -1,0 +1,238 @@
+/* Distributed Backup System — Dashboard Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #1a1a2e;
+    color: #eee;
+    min-height: 100vh;
+}
+
+header {
+    background: #16213e;
+    padding: 1rem 2rem;
+    border-bottom: 2px solid #0f3460;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    color: #e94560;
+}
+
+header p {
+    font-size: 0.85rem;
+    color: #aaa;
+    margin-top: 0.25rem;
+}
+
+main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    padding: 1rem;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.panel {
+    background: #16213e;
+    border-radius: 8px;
+    padding: 1rem;
+    border: 1px solid #0f3460;
+}
+
+.panel h2 {
+    font-size: 1rem;
+    color: #e94560;
+    margin-bottom: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Topology SVG */
+#topology-svg {
+    width: 100%;
+    height: auto;
+    background: #0f3460;
+    border-radius: 4px;
+}
+
+.switch {
+    fill: #1a1a2e;
+    stroke: #e94560;
+    stroke-width: 2;
+}
+
+.switch-label {
+    fill: #eee;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.host {
+    fill: #1a1a2e;
+    stroke-width: 2;
+}
+
+.host.client {
+    stroke: #4ecca3;
+}
+
+.host.server {
+    stroke: #e94560;
+}
+
+.host-label {
+    fill: #eee;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.host-role {
+    fill: #aaa;
+    font-size: 10px;
+}
+
+.link {
+    stroke: #4ecca3;
+    stroke-width: 2;
+}
+
+.link.down {
+    stroke: #e94560;
+    stroke-dasharray: 5,5;
+}
+
+/* Buttons */
+.button-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.btn {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: bold;
+    transition: opacity 0.2s;
+}
+
+.btn:hover {
+    opacity: 0.85;
+}
+
+.btn-primary { background: #4ecca3; color: #1a1a2e; }
+.btn-danger { background: #e94560; color: #fff; }
+.btn-warning { background: #f0a500; color: #1a1a2e; }
+.btn-success { background: #4ecca3; color: #1a1a2e; }
+.btn-secondary { background: #0f3460; color: #eee; }
+
+/* Progress Bar */
+#progress-container {
+    width: 100%;
+    height: 20px;
+    background: #0f3460;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+#progress-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #4ecca3, #e94560);
+    transition: width 0.3s;
+}
+
+#progress-text {
+    font-size: 0.85rem;
+    color: #aaa;
+}
+
+/* Metrics */
+.metric {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.25rem 0;
+    border-bottom: 1px solid #0f3460;
+}
+
+.metric-label {
+    color: #aaa;
+}
+
+.metric-value {
+    color: #4ecca3;
+    font-weight: bold;
+}
+
+#throughput-chart {
+    margin-top: 0.75rem;
+    background: #0f3460;
+    border-radius: 4px;
+}
+
+/* Files Panel */
+#files-list {
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 0.5rem;
+}
+
+.file-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.25rem 0;
+    border-bottom: 1px solid #0f3460;
+    font-size: 0.85rem;
+}
+
+.file-name {
+    color: #eee;
+}
+
+.file-size {
+    color: #aaa;
+}
+
+.file-server {
+    color: #e94560;
+    font-weight: bold;
+    margin-right: 0.5rem;
+}
+
+/* Event Log */
+#event-log {
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 0.8rem;
+    background: #0f3460;
+    border-radius: 4px;
+    padding: 0.5rem;
+}
+
+.event-entry {
+    padding: 0.15rem 0;
+    border-bottom: 1px solid #16213e;
+}
+
+.event-timestamp {
+    color: #4ecca3;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+}
