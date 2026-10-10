@@ -236,3 +236,29 @@ main {
         grid-template-columns: 1fr;
     }
 }
+
+/* Shared Files browser */
+.panel-hint {
+    font-size: 0.8rem;
+    color: #aaa;
+    margin-bottom: 0.5rem;
+}
+
+.panel-hint code {
+    color: #4ecca3;
+}
+
+#browse-list {
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 0.5rem;
+}
+
+#browse-list .file-item {
+    cursor: pointer;
+}
+
+#browse-list .file-item.selected {
+    outline: 2px solid #4ecca3;
+    border-radius: 4px;
+}

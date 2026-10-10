@@ -32,6 +32,8 @@ const throughputChart = new Chart(ctx, {
 
 // State
 let throughputData = [];
+let selectedFile = null;
+let lastResultSeen = null;
 
 // Socket events
 socket.on('connect', () => {
@@ -53,13 +55,21 @@ socket.on('link_event', (data) => {
 
 // Button handlers
 document.getElementById('btn-start').addEventListener('click', async () => {
+    if (!selectedFile) {
+        addEvent('Pick a file from Shared Files first');
+        return;
+    }
     const response = await fetch('/api/start-transfer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: 'demo_file.bin', file_path: '/tmp/test_file.bin' })
+        body: JSON.stringify({ filename: selectedFile })
     });
     const result = await response.json();
-    addEvent(`Transfer started: ${result.filename}`);
+    if (result.error) {
+        addEvent(`Transfer failed: ${result.error}`);
+    } else {
+        addEvent(`Transfer queued: ${result.filename} — bridge will pick it up`);
+    }
 });
 
 document.getElementById('btn-stop').addEventListener('click', async () => {
@@ -156,6 +166,34 @@ async function loadFiles() {
     }
 }
 
+async function loadBrowse() {
+    const response = await fetch('/api/browse');
+    const data = await response.json();
+    const list = document.getElementById('browse-list');
+    list.innerHTML = '';
+
+    if (!data.files.length) {
+        list.innerHTML = '<p>Drop files into <code>shared_files/</code> and click Refresh.</p>';
+        return;
+    }
+
+    for (const file of data.files) {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.innerHTML = `
+            <span class="file-name">${file.name}</span>
+            <span class="file-size">${formatSize(file.size)}</span>
+        `;
+        item.addEventListener('click', () => {
+            document.querySelectorAll('#browse-list .file-item').forEach(el => el.classList.remove('selected'));
+            item.classList.add('selected');
+            selectedFile = file.name;
+            addEvent(`Selected: ${file.name}`);
+        });
+        list.appendChild(item);
+    }
+}
+
 function formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -164,9 +202,24 @@ function formatSize(bytes) {
 
 // Initial load
 loadFiles();
+loadBrowse();
+document.getElementById('btn-refresh-browse').addEventListener('click', loadBrowse);
 setInterval(async () => {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();
     document.getElementById('recovery-value').textContent =
         metrics.recovery_time ? `${metrics.recovery_time.toFixed(2)}s` : 'N/A';
+    try {
+        const res = await fetch('/api/transfer-result');
+        const tr = await res.json();
+        if ((tr.status === 'done' || tr.status === 'failed') && lastResultSeen !== tr.filename + tr.status) {
+            lastResultSeen = tr.filename + tr.status;
+            if (tr.status === 'done') {
+                addEvent(`Transfer complete: ${tr.filename} (CRC32 verified)`);
+            } else {
+                addEvent(`Transfer failed: ${tr.filename} — ${tr.error || 'unknown error'}`);
+            }
+            loadFiles();
+        }
+    } catch (e) { /* bridge result not available yet */ }
 }, 2000);

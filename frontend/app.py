@@ -2,6 +2,7 @@
 Flask web dashboard for the Distributed Backup System.
 Serves a single-page app with live topology, transfer control, metrics, and event log.
 """
+import json
 import os
 import time
 from flask import Flask, render_template, jsonify, request
@@ -17,6 +18,9 @@ socketio = SocketIO(
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 STORED_DIR = os.path.join(BASE_DIR, 'stored_files')
+SHARED_DIR = os.path.join(BASE_DIR, 'shared_files')
+REQUEST_FILE = os.path.join(SHARED_DIR, 'transfer_request.json')
+RESULT_FILE = os.path.join(SHARED_DIR, 'transfer_result.json')
 
 # Global state
 transfer_state = {
@@ -62,17 +66,45 @@ def list_files():
     return jsonify(files)
 
 
+@app.route('/api/browse')
+def browse_files():
+    """List files in shared_files/ for the dashboard file picker."""
+    os.makedirs(SHARED_DIR, exist_ok=True)
+    files = [
+        {'name': f, 'size': os.path.getsize(os.path.join(SHARED_DIR, f))}
+        for f in sorted(os.listdir(SHARED_DIR))
+        if os.path.isfile(os.path.join(SHARED_DIR, f))
+        and not f.startswith('transfer_')
+    ]
+    return jsonify({'directory': 'shared_files', 'files': files})
+
+
+@app.route('/api/transfer-result')
+def transfer_result():
+    """Read the latest bridge result, if any."""
+    if os.path.exists(RESULT_FILE):
+        with open(RESULT_FILE) as f:
+            return jsonify(json.load(f))
+    return jsonify({'status': 'none'})
+
+
 @app.route('/api/start-transfer', methods=['POST'])
 def start_transfer():
-    """Start a file transfer from client to server."""
-    data = request.get_json()
-    filename = data.get('filename', 'test_file.bin')
-    file_path = data.get('file_path', os.path.join(BASE_DIR, 'test_file.bin'))
+    """Queue a file transfer: writes a request the Mininet bridge picks up."""
+    data = request.get_json(force=True, silent=True) or {}
+    filename = data.get('filename') or os.path.basename(data.get('file_path', ''))
+    if not filename or '..' in filename or '/' in filename or '\\' in filename:
+        return jsonify({'error': 'Invalid filename'}), 400
 
-    # Validate file path to prevent directory traversal
-    real_path = os.path.realpath(file_path)
-    if '..' in file_path or not real_path.startswith(os.path.realpath(BASE_DIR)):
-        return jsonify({'error': 'Invalid file path'}), 400
+    os.makedirs(SHARED_DIR, exist_ok=True)
+    src = os.path.join(SHARED_DIR, filename)
+    if not os.path.isfile(src):
+        return jsonify({'error': f'File not found in shared_files/: {filename}'}), 404
+
+    if os.path.exists(RESULT_FILE):
+        os.unlink(RESULT_FILE)
+    with open(REQUEST_FILE, 'w') as f:
+        json.dump({'filename': filename}, f)
 
     transfer_state['running'] = True
     transfer_state['filename'] = filename
@@ -80,9 +112,9 @@ def start_transfer():
     transfer_state['chunks_sent'] = 0
     transfer_state['start_time'] = time.time()
 
-    log_event(f'Starting transfer: {filename}')
+    log_event(f'Transfer queued: {filename} (bridge will pick it up)')
     socketio.emit('transfer_state', transfer_state)
-    return jsonify({'status': 'started', 'filename': filename})
+    return jsonify({'status': 'queued', 'filename': filename})
 
 
 @app.route('/api/stop-transfer', methods=['POST'])

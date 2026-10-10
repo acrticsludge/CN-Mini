@@ -85,6 +85,7 @@ class BackupClient:
                 return False
             print(f"[CLIENT] Resuming from chunk {self.last_ack + 1}")
 
+        start_chunk = resume_from if resume_from > 0 else 0
         return self._send_chunks(filepath, start_chunk, total_chunks)
 
     def _send_chunks(self, filepath, start_chunk, total_chunks):

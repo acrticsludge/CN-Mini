@@ -107,6 +107,8 @@ class TestFailureRecovery:
             assert '/api/link-up' in rules
             assert '/api/status' in rules
             assert '/api/metrics' in rules
+            assert '/api/browse' in rules
+            assert '/api/transfer-result' in rules
         except ImportError:
             pytest.skip("Flask not installed — skipping frontend tests")
 

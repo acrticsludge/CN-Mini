@@ -45,7 +45,7 @@ Go to `http://localhost:5000` in your browser.
 
 ### 4. Run a demo
 
-1. Click **Start Transfer** — watch the file move from client to server
+1. Drop a file into `shared_files/`, pick it in the dashboard **Shared Files** panel, click **Start Transfer** — watch the file move from client to server
 2. Click **Trigger Link Failure** — watch the network reroute and the transfer resume
 3. Check the **Stored Files** panel — your file is there, even after restarting
 
@@ -54,12 +54,13 @@ Go to `http://localhost:5000` in your browser.
 ## Project Structure
 
 ```
-mininet/       — Network topology (4 switches, 4 hosts)
+mininet/       — Network topology (4 switches, 4 hosts) + dashboard bridge
 controller/    — SDN controller (dynamic path selection + failure recovery)
 client/        — File sender (chunking, checksum, resume)
 server/        — File receiver (verify, reassemble, store)
 common/        — Shared protocol + checksum utilities
 frontend/      — Web dashboard (Flask + real-time updates)
+shared_files/  — Drop files here to pick them from the dashboard
 stored_files/  — Where transferred files are saved
 tests/         — Test suite
 docs/          — Design spec, runbook, architecture, results

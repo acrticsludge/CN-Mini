@@ -53,6 +53,8 @@ def create_topology():
     # Create stored_files directories and bind-mount into server hosts
     base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
     stored_dir = os.path.join(base_dir, 'stored_files')
+    shared_dir = os.path.join(base_dir, 'shared_files')
+    os.makedirs(shared_dir, exist_ok=True)
 
     for h in ['h3', 'h4']:
         host_dir = os.path.join(stored_dir, h)
@@ -61,8 +63,21 @@ def create_topology():
         node.cmd('mkdir -p /tmp/backup')
         node.cmd(f'mount --bind {host_dir} /tmp/backup')
 
+    # Bind-mount shared_files/ to all hosts for bridge communication
+    for h in ['h1', 'h2', 'h3', 'h4']:
+        node = net.get(h)
+        node.cmd('mkdir -p /tmp/shared')
+        node.cmd(f'mount --bind {shared_dir} /tmp/shared')
+
+    # Start bridge process on h1 to watch for transfer requests.
+    # h1 shares the host filesystem, so launch by host path.
+    bridge_src = os.path.join(base_dir, 'mininet', 'bridge.py')
+    net.get('h1').cmd(f'nohup python3 {bridge_src} > /tmp/bridge.log 2>&1 &')
+
     print("[TOPOLOGY] Mininet started: 4 switches, 4 hosts")
     print("[TOPOLOGY] stored_files/ bind-mounted to h3:/tmp/backup and h4:/tmp/backup")
+    print("[TOPOLOGY] shared_files/ bind-mounted to all hosts at /tmp/shared/")
+    print("[TOPOLOGY] Bridge running on h1 — watching for transfer requests")
     print("[TOPOLOGY] Type 'exit' or 'quit' to stop")
 
     # Open the Mininet CLI for interactive control
