@@ -115,14 +115,22 @@ function addEvent(message) {
 }
 
 function updateProgress(state) {
+    // Defensive: a missing field must not throw. An exception inside the polling
+    // callback would freeze this panel while the rest of the dashboard keeps ticking.
+    state = state || {};
     const bar = document.getElementById('progress-bar');
     const text = document.getElementById('progress-text');
     const chunks = document.getElementById('chunks-value');
     const throughput = document.getElementById('throughput-value');
 
-    bar.style.width = `${state.progress}%`;
+    const progress = Number(state.progress) || 0;
+    const sent = Number(state.chunks_sent) || 0;
+    const total = Number(state.total_chunks) || 0;
+    const tput = Number(state.throughput) || 0;
+
+    bar.style.width = `${progress}%`;
     if (state.running) {
-        text.textContent = `Transferring ${state.filename}: ${state.progress.toFixed(1)}%`;
+        text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
     } else if (state.result && state.result.status === 'done') {
         text.textContent = `Transfer complete: ${state.filename} (CRC32 verified)`;
     } else if (state.result && state.result.status === 'failed') {
@@ -132,11 +140,11 @@ function updateProgress(state) {
     } else {
         text.textContent = 'No transfer running';
     }
-    chunks.textContent = `${state.chunks_sent} / ${state.total_chunks}`;
-    throughput.textContent = `${state.throughput.toFixed(1)} KB/s`;
+    chunks.textContent = `${sent} / ${total}`;
+    throughput.textContent = `${tput.toFixed(1)} KB/s`;
 
     // Update chart (skipped when the chart library failed to load)
-    throughputData.push(state.throughput);
+    throughputData.push(tput);
     if (throughputData.length > 50) throughputData.shift();
     if (throughputChart) {
         throughputChart.data.labels = Array.from({ length: throughputData.length }, (_, i) => i);

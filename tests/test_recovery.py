@@ -15,6 +15,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from common.protocol import *
 from common.checksum import compute_crc32
+from common.transport import recv_frame
+
+
+def free_port():
+    """Grab an ephemeral port so repeated tests never collide."""
+    import socket as s
+    with s.socket(s.AF_INET, s.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
 
 
 class TestRecovery:
@@ -22,68 +31,62 @@ class TestRecovery:
 
     @pytest.fixture
     def server(self):
-        """Start a backup server on a random port."""
+        """Start a backup server on a free port; reports (server, port, storage)."""
         from server.server import BackupServer
-        srv = BackupServer(host='127.0.0.1', port=19001, storage_dir='/tmp/test_recovery')
+        port = free_port()
+        storage = os.path.join(tempfile.gettempdir(), f'test_recovery_{port}')
+        os.makedirs(storage, exist_ok=True)
+        srv = BackupServer(host='127.0.0.1', port=port, storage_dir=storage)
         t = threading.Thread(target=srv.start, daemon=True)
         t.start()
         time.sleep(0.5)
-        yield srv
+        yield srv, port, storage
         srv.stop()
 
     def test_resume_after_partial_transfer(self, server):
         """Client sends some chunks, disconnects, resumes, file completes."""
         from client.client import BackupClient
+        _, port, storage = server
 
-        # Create a 10-chunk file (80 KB)
         content = b'R' * (CHUNK_SIZE * 10)
         with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
             f.write(content)
             path = f.name
 
         try:
-            # First attempt: send only 3 chunks then "crash"
-            client = BackupClient([('127.0.0.1', 19001)])
-            client.connect()
-
             filename = os.path.basename(path)
             file_size = len(content)
             total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
 
-            # Send HELLO
-            hello = pack_hello(filename, file_size)
-            client.sock.sendall(hello)
-            client.recv_frame()  # ACK
+            # First attempt: 3 chunks, then an abrupt disconnect.
+            client = BackupClient([('127.0.0.1', port)])
+            client.connect()
+            client.sock.sendall(pack_hello(filename, file_size))
+            assert recv_frame(client.sock)['type'] == MSG_ACK
 
-            # Send only 3 chunks
             with open(path, 'rb') as f:
                 for i in range(3):
                     chunk_data = f.read(CHUNK_SIZE)
-                    checksum = compute_crc32(chunk_data)
-                    frame = pack_data(i, total_chunks, chunk_data, checksum)
+                    frame = pack_data(i, total_chunks, chunk_data,
+                                      compute_crc32(chunk_data))
                     client.sock.sendall(frame)
-                    client.recv_frame()  # ACK
-
-            # Simulate crash: close without finishing
+                    ack = recv_frame(client.sock)
+                    assert ack is not None and unpack_ack(ack['payload']) == i
+            received_path = os.path.join(storage, filename)
+            assert os.path.getsize(received_path) == 3 * CHUNK_SIZE
             client.sock.close()
 
-            # Resume: reconnect and continue from chunk 3
-            client2 = BackupClient([('127.0.0.1', 19001)])
-            client2.last_ack = 2  # Last successfully ACKed chunk
+            # Resume: the server must keep the first 3 chunks, not truncate them.
+            client2 = BackupClient([('127.0.0.1', port)])
+            client2.last_ack = 2
             result = client2.send_file(path, resume_from=3)
             client2.close()
 
             assert result is True
-
-            # Verify complete file
-            received_path = f'/tmp/test_recovery/{filename}'
-            assert os.path.exists(received_path)
-
             with open(path, 'rb') as f:
                 original = f.read()
             with open(received_path, 'rb') as f:
                 received = f.read()
-
             assert original == received
             os.unlink(received_path)
         finally:
@@ -92,6 +95,7 @@ class TestRecovery:
     def test_resume_from_zero(self, server):
         """Resume from chunk 0 is equivalent to a fresh transfer."""
         from client.client import BackupClient
+        _, port, storage = server
 
         content = b'S' * (CHUNK_SIZE * 3)
         with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
@@ -99,14 +103,13 @@ class TestRecovery:
             path = f.name
 
         try:
-            client = BackupClient([('127.0.0.1', 19001)])
+            client = BackupClient([('127.0.0.1', port)])
             result = client.send_file(path, resume_from=0)
             client.close()
 
             assert result is True
 
-            filename = os.path.basename(path)
-            received_path = f'/tmp/test_recovery/{filename}'
+            received_path = os.path.join(storage, os.path.basename(path))
             assert os.path.exists(received_path)
 
             with open(path, 'rb') as f:
@@ -121,6 +124,7 @@ class TestRecovery:
     def test_server_handles_multiple_clients(self, server):
         """Server handles concurrent client connections."""
         from client.client import BackupClient
+        _, port, storage = server
 
         results = []
 
@@ -130,10 +134,9 @@ class TestRecovery:
                 f.write(content)
                 path = f.name
             try:
-                client = BackupClient([('127.0.0.1', 19001)])
-                result = client.send_file(path)
+                client = BackupClient([('127.0.0.1', port)])
+                results.append(client.send_file(path))
                 client.close()
-                results.append(result)
             finally:
                 os.unlink(path)
 
@@ -145,6 +148,9 @@ class TestRecovery:
 
         for t in threads:
             t.join(timeout=30)
+
+        assert len(results) == 3
+        assert all(results)
 
         assert all(results)
         assert len(results) == 3

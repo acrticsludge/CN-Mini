@@ -4,6 +4,7 @@ Supports interrupted-transfer recovery via RESUME messages and multi-server fail
 """
 
 import socket
+import json
 import os
 import sys
 import time
@@ -121,10 +122,16 @@ class BackupClient:
                 self.last_ack = acked_index
                 bytes_sent += len(chunk_data)
 
-                if chunk_index % 10 == 0:
-                    progress = (chunk_index + 1) / total_chunks * 100
-                    print(f"[CLIENT] Progress: {progress:.1f}% "
-                          f"({chunk_index + 1}/{total_chunks} chunks)")
+                self._report_progress(chunk_index, total_chunks, start_time, bytes_sent)
+
+        self._report_progress(total_chunks - 1, total_chunks, start_time, bytes_sent)
+        summary = {
+            'filename': os.path.basename(filepath),
+            'chunks': self.last_ack + 1,
+            'bytes': bytes_sent,
+            'throughput': round(bytes_sent / max(time.time() - start_time, 1e-6) / 1024, 1),
+        }
+        print('[COMPLETE] ' + json.dumps(summary), flush=True)
 
         elapsed = time.time() - start_time
         throughput = bytes_sent / elapsed / 1024 if elapsed > 0 else 0
@@ -132,6 +139,21 @@ class BackupClient:
         print(f"[CLIENT] Transfer complete: {filename} "
               f"({bytes_sent} bytes in {elapsed:.2f}s, {throughput:.1f} KB/s)")
         return True
+
+    def _report_progress(self, chunk_index, total_chunks, start_time, bytes_sent):
+        """Emit a machine-readable progress line for the bridge to parse."""
+        elapsed = max(time.time() - start_time, 1e-6)
+        payload = {
+            'chunk': chunk_index + 1,
+            'total': total_chunks,
+            'bytes': bytes_sent,
+            'throughput': round(bytes_sent / elapsed / 1024, 1),
+        }
+        print('[PROGRESS] ' + json.dumps(payload), flush=True)
+        if chunk_index % 10 == 0:
+            pct = (chunk_index + 1) / total_chunks * 100
+            print(f"[CLIENT] Progress: {pct:.1f}% "
+                  f"({chunk_index + 1}/{total_chunks} chunks)", flush=True)
 
     def close(self):
         """Close the connection."""

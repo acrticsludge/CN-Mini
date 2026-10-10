@@ -67,7 +67,9 @@ class ClientHandler(threading.Thread):
         self.total_chunks = (self.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         self.output_path = os.path.join(self.storage_dir, self.filename)
         os.makedirs(self.storage_dir, exist_ok=True)
-        self.file_handle = open(self.output_path, 'wb')
+        # 'r+b' preserves an existing partial file so a RESUME can continue it;
+        # a fresh transfer still starts from an empty file.
+        self.file_handle = open(self.output_path, 'r+b' if os.path.exists(self.output_path) else 'wb')
         self._start_time = time.time()
         self._file_pos = 0
         self.send_ack(0)
@@ -92,13 +94,32 @@ class ClientHandler(threading.Thread):
         if self.received_chunks >= self.total_chunks:
             elapsed = time.time() - self._start_time
             print(f"[SERVER] Transfer complete: {self.filename} "
-                  f"({self.received_chunks} chunks)")
+                  f"({self.received_chunks} chunks in {elapsed:.2f}s)")
+            self._report_stored()
 
     def _handle_resume(self, frame):
-        """Process RESUME: confirm the resume point to the client."""
-        last_ack = struct.unpack('!I', frame['payload'])[0]
+        """Process RESUME: rewind to the resume point and confirm it to the client."""
+        last_ack = struct.unpack('!I', frame['payload'])[0] if len(frame['payload']) == 4 else -1
+        if last_ack < 0:
+            print(f"[SERVER] Malformed RESUME payload ({len(frame['payload'])} bytes)")
+            self.send_ack(-1)
+            return
+        # Skip ahead to the first chunk the client still owes us.
+        self._file_pos = (last_ack + 1) * CHUNK_SIZE
+        self.file_handle.seek(self._file_pos)
+        self.received_chunks = last_ack + 1
         self.send_ack(last_ack)
-        print(f"[SERVER] Resume confirmed from chunk {last_ack + 1}")
+        print(f"[SERVER] Resume confirmed from chunk {last_ack + 1} "
+              f"(offset {self._file_pos} bytes)")
+
+    def _report_stored(self):
+        """Emit a machine-readable receipt so the bridge can verify server-side."""
+        receipt = {
+            'filename': self.filename,
+            'size': os.path.getsize(self.output_path),
+            'chunks': self.received_chunks,
+        }
+        print('[STORED] ' + json.dumps(receipt), flush=True)
 
     def send_ack(self, chunk_index):
         """Send an ACK frame for the given chunk index."""

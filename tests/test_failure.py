@@ -85,10 +85,14 @@ class TestFailureRecovery:
             path = nx.shortest_path(G, 's1', 's3', weight='weight')
             assert path == ['s1', 's4', 's3']
 
-            # Restore link
+            # Restore link. Both s1-s2-s3 and s1-s4-s3 are 2 hops with equal
+            # cost, so assert on the property (shortest, correct endpoints)
+            # rather than a specific middle hop — the tie-break is unspecified.
             G.add_edge('s2', 's3', weight=1)
             path = nx.shortest_path(G, 's1', 's3', weight='weight')
-            assert path == ['s1', 's2', 's3']
+            assert path[0] == 's1' and path[-1] == 's3'
+            assert len(path) == 3, path
+            assert nx.shortest_path_length(G, 's1', 's3', weight='weight') == 2
         except ImportError:
             pytest.skip("networkx not installed — skipping graph tests")
 

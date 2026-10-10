@@ -21,6 +21,9 @@ STORED_DIR = os.path.join(BASE_DIR, 'stored_files')
 SHARED_DIR = os.path.join(BASE_DIR, 'shared_files')
 REQUEST_FILE = os.path.join(SHARED_DIR, 'transfer_request.json')
 RESULT_FILE = os.path.join(SHARED_DIR, 'transfer_result.json')
+PROGRESS_FILE = os.path.join(SHARED_DIR, 'transfer_progress.json')
+EVENTS_FILE = os.path.join(SHARED_DIR, 'transfer_events.json')
+CANCEL_FILE = os.path.join(SHARED_DIR, 'transfer_cancel.json')
 
 # Global state
 transfer_state = {
@@ -38,19 +41,46 @@ transfer_state = {
 event_log = []
 
 
-def _sync_transfer_state():
-    """Fold the bridge's result into transfer_state so the dashboard can show progress."""
+def _read_json(path):
+    if not os.path.exists(path):
+        return None
     try:
-        if os.path.exists(RESULT_FILE):
-            with open(RESULT_FILE) as f:
-                result = json.load(f)
-            if result.get('filename') == transfer_state['filename']:
-                transfer_state['running'] = False
-                if result.get('status') == 'done':
-                    transfer_state['progress'] = 100
-                transfer_state['result'] = result
+        with open(path) as f:
+            return json.load(f)
     except Exception:
-        pass
+        return None
+
+
+def _sync_transfer_state():
+    """Fold the bridge's progress/result/events into dashboard state.
+
+    The bridge is a separate process writing plain files, so these are the only
+    channel the dashboard has to a running transfer. Keep this tolerant: a
+    partially written or missing file must not take the endpoint down.
+    """
+    progress = _read_json(PROGRESS_FILE)
+    if progress and progress.get('filename') == transfer_state['filename']:
+        transfer_state['running'] = bool(progress.get('running'))
+        transfer_state['chunks_sent'] = progress.get('chunk', 0)
+        transfer_state['total_chunks'] = progress.get('total', 0)
+        transfer_state['throughput'] = progress.get('throughput', 0.0)
+        if not progress.get('running') and not progress.get('cancelled'):
+            transfer_state['progress'] = 100
+
+    result = _read_json(RESULT_FILE)
+    if result and result.get('filename') == transfer_state['filename']:
+        transfer_state['result'] = result
+        transfer_state['running'] = False
+        if result.get('status') == 'done':
+            transfer_state['progress'] = 100
+
+    events = _read_json(EVENTS_FILE)
+    if events:
+        known = set(event_log)
+        for entry in events:
+            if entry not in known:
+                event_log.append(entry)
+        del event_log[:-50]
 
 
 def log_event(message):
@@ -116,8 +146,10 @@ def start_transfer():
     if not os.path.isfile(src):
         return jsonify({'error': f'File not found in shared_files/: {filename}'}), 404
 
-    if os.path.exists(RESULT_FILE):
-        os.unlink(RESULT_FILE)
+    # Clear stale bridge bookkeeping so this run's progress is unambiguous.
+    for p in (RESULT_FILE, PROGRESS_FILE, EVENTS_FILE, CANCEL_FILE):
+        if os.path.exists(p):
+            os.unlink(p)
     with open(REQUEST_FILE, 'w') as f:
         json.dump({'filename': filename}, f)
 
@@ -125,7 +157,10 @@ def start_transfer():
     transfer_state['filename'] = filename
     transfer_state['progress'] = 0
     transfer_state['chunks_sent'] = 0
+    transfer_state['total_chunks'] = 0
+    transfer_state['throughput'] = 0.0
     transfer_state['start_time'] = time.time()
+    transfer_state['result'] = None
 
     log_event(f'Transfer queued: {filename} (bridge will pick it up)')
     socketio.emit('transfer_state', transfer_state)
@@ -134,8 +169,14 @@ def start_transfer():
 
 @app.route('/api/stop-transfer', methods=['POST'])
 def stop_transfer():
-    """Stop the current transfer."""
+    """Stop the current transfer by telling the bridge to kill its client."""
     transfer_state['running'] = False
+    try:
+        os.makedirs(SHARED_DIR, exist_ok=True)
+        with open(CANCEL_FILE, 'w') as f:
+            json.dump({'requested_at': time.time()}, f)
+    except Exception:
+        pass
     log_event('Transfer stopped by user')
     socketio.emit('transfer_state', transfer_state)
     return jsonify({'status': 'stopped'})

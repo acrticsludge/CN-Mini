@@ -5,8 +5,8 @@ and the received file matches the original.
 
 import os
 import sys
-import time
 import socket
+import time
 import struct
 import tempfile
 import threading
@@ -16,6 +16,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from common.protocol import *
 from common.checksum import compute_crc32, verify_crc32
+from common.transport import recv_frame
+
+
+def free_port():
+    """Grab an ephemeral port. Reused between tests, since a stopped server's
+    listener and the next test's bind would otherwise collide."""
+    import socket as s
+    with s.socket(s.AF_INET, s.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
 
 
 class TestProtocol:
@@ -90,28 +100,31 @@ class TestFileTransfer:
 
     @pytest.fixture
     def server(self):
-        """Start a backup server on a random port."""
+        """Start a backup server on a free port; reports (server, port)."""
         from server.server import BackupServer
-        srv = BackupServer(host='127.0.0.1', port=19000, storage_dir='/tmp/test_backup')
+        port = free_port()
+        storage = os.path.join(tempfile.gettempdir(), f'test_backup_{port}')
+        os.makedirs(storage, exist_ok=True)
+        srv = BackupServer(host='127.0.0.1', port=port, storage_dir=storage)
         t = threading.Thread(target=srv.start, daemon=True)
         t.start()
         time.sleep(0.5)
-        yield srv
+        yield srv, port, storage
         srv.stop()
 
     def test_basic_transfer(self, temp_file, server):
         """Client sends a file, server receives it correctly."""
         from client.client import BackupClient
+        _, port, storage = server
 
-        client = BackupClient([('127.0.0.1', 19000)])
+        client = BackupClient([('127.0.0.1', port)])
         result = client.send_file(temp_file)
         client.close()
 
         assert result is True
 
-        # Verify file was received
         filename = os.path.basename(temp_file)
-        received_path = f'/tmp/test_backup/{filename}'
+        received_path = os.path.join(storage, filename)
         assert os.path.exists(received_path)
 
         with open(temp_file, 'rb') as f:
@@ -120,28 +133,26 @@ class TestFileTransfer:
             received = f.read()
 
         assert original == received
-
-        # Cleanup
         os.unlink(received_path)
 
     def test_multiple_chunks(self, server):
         """File larger than one chunk is sent correctly."""
         from client.client import BackupClient
+        _, port, storage = server
 
-        # Create a 5-chunk file (40 KB)
         content = b'X' * (CHUNK_SIZE * 5)
         with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
             f.write(content)
             path = f.name
 
         try:
-            client = BackupClient([('127.0.0.1', 19000)])
+            client = BackupClient([('127.0.0.1', port)])
             result = client.send_file(path)
             client.close()
             assert result is True
 
             filename = os.path.basename(path)
-            received_path = f'/tmp/test_backup/{filename}'
+            received_path = os.path.join(storage, filename)
             assert os.path.exists(received_path)
 
             with open(path, 'rb') as f:
@@ -154,30 +165,32 @@ class TestFileTransfer:
             os.unlink(path)
 
     def test_server_rejects_corrupted_chunk(self, server):
-        """Server detects CRC32 mismatch and drops the corrupted chunk."""
+        """Server detects a CRC32 mismatch and drops the chunk without ACKing."""
         from client.client import BackupClient
+        _, port, storage = server
 
-        content = b'Z' * CHUNK_SIZE
         with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
-            f.write(content)
+            f.write(b'Z' * CHUNK_SIZE)
             path = f.name
 
         try:
-            client = BackupClient([('127.0.0.1', 19000)])
-            # Manually send a corrupted frame
+            client = BackupClient([('127.0.0.1', port)])
             client.connect()
-            hello = pack_hello(os.path.basename(path), len(content))
-            client.sock.sendall(hello)
-            client.recv_frame()  # ACK
+            client.sock.sendall(pack_hello(os.path.basename(path), CHUNK_SIZE))
+            assert recv_frame(client.sock)['type'] == MSG_ACK  # ready
 
-            # Send corrupted chunk
-            bad_data = b'corrupted!'
-            bad_checksum = compute_crc32(b'different data')
-            frame = pack_data(0, 1, bad_data, bad_checksum)
+            # Wrong checksum for this payload — the server must not accept it.
+            frame = pack_data(0, 1, b'corrupted!', compute_crc32(b'different data'))
             client.sock.sendall(frame)
-            client.recv_frame()  # ACK
-
+            client.sock.settimeout(2)
+            # recv_all() swallows the timeout and returns None, so "no ACK"
+            # arrives as None rather than as a raised exception.
+            assert recv_frame(client.sock) is None
+            client.sock.settimeout(10)
             client.close()
-            # The corrupted chunk should have been dropped
+
+            # Nothing was written, so no reassembled file exists.
+            assert not os.path.exists(os.path.join(storage, os.path.basename(path)))
         finally:
+            client.close()
             os.unlink(path)
