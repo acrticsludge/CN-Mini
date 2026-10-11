@@ -14,7 +14,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from common.protocol import *
+from common.protocol import (
+    CHUNK_SIZE, MSG_DATA, MSG_ACK, MSG_RESUME, MSG_HELLO,
+    pack_frame, unpack_frame, pack_hello, unpack_hello, pack_ack,
+    unpack_ack, pack_resume, unpack_resume, pack_data,
+)
 from common.checksum import compute_crc32, verify_crc32
 from common.transport import recv_frame
 

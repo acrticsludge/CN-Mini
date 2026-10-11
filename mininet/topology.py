@@ -10,16 +10,16 @@ dashboard's "Trigger Link Failure" button could not affect the real network.
 """
 
 import os
-import json
+import subprocess
+import sys
 import threading
-import time
 from mininet.net import Mininet
 from mininet.node import OVSSwitch, RemoteController
 from mininet.link import TCLink
 from mininet.cli import CLI
 from mininet.log import setLogLevel
 
-from linkctl import apply_link_state, serve_link_requests, write_json_atomic
+from linkctl import serve_link_requests
 
 
 def create_topology():
@@ -83,7 +83,6 @@ def create_topology():
     # Servers are children of the Mininet namespace: they die when Mininet does,
     # so starting them here means one `sudo python3 mininet/topology.py` brings
     # the whole system up instead of leaving ports silently unbound.
-    server_src = os.path.join(base_dir, 'server', 'server.py')
     bridge_src = os.path.join(base_dir, 'mininet', 'bridge.py')
 
     # popen() — not cmd('... &') — is what puts a long-running process into the
@@ -102,7 +101,7 @@ def create_topology():
     for host, ip in [('h3', '10.0.0.3'), ('h4', '10.0.0.4')]:
         node = net.get(host)
         node.cmd(f'mkdir -p /tmp/src && cp -r {base_dir}/server {base_dir}/common /tmp/src/')
-        node.popen([sys.executable, f'/tmp/src/server/server.py',
+        node.popen([sys.executable, '/tmp/src/server/server.py',
                     '--host', ip, '--port', '9000',
                     '--storage', '/tmp/backup'],
                    stdout=open(f'/tmp/server_{host}.log', 'w'),
