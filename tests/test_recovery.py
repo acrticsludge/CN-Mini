@@ -26,6 +26,21 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def cleanup_dir(path):
+    """Remove a temp storage dir, retrying.
+
+    On Windows the server's handler thread may still hold the output file open
+    when the test finishes, so an immediate unlink raises PermissionError.
+    Deleting the whole directory with a short retry avoids that race.
+    """
+    import shutil
+    for _ in range(20):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        time.sleep(0.1)
+
+
 class TestRecovery:
     """Test interrupted-transfer recovery via RESUME messages."""
 
@@ -42,6 +57,7 @@ class TestRecovery:
         time.sleep(0.5)
         yield srv, port, storage
         srv.stop()
+        cleanup_dir(storage)
 
     def test_resume_after_partial_transfer(self, server):
         """Client sends some chunks, disconnects, resumes, file completes."""
@@ -88,7 +104,6 @@ class TestRecovery:
             with open(received_path, 'rb') as f:
                 received = f.read()
             assert original == received
-            os.unlink(received_path)
         finally:
             os.unlink(path)
 
@@ -117,7 +132,6 @@ class TestRecovery:
             with open(received_path, 'rb') as f:
                 received = f.read()
             assert original == received
-            os.unlink(received_path)
         finally:
             os.unlink(path)
 

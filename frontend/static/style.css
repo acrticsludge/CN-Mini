@@ -153,6 +153,23 @@ main {
     transition: width 0.3s;
 }
 
+/* Transfer state, readable at a glance: in flight vs. settled. */
+#progress-bar.running {
+    background: linear-gradient(90deg, #4ecca3, #f0a500);
+}
+
+#progress-bar.done {
+    background: #4ecca3;
+}
+
+#progress-bar.failed {
+    background: #e94560;
+}
+
+#progress-bar.stopped {
+    background: #f0a500;
+}
+
 #progress-text {
     font-size: 0.85rem;
     color: #aaa;

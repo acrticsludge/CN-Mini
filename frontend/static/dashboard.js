@@ -131,14 +131,25 @@ function updateProgress(state) {
     bar.style.width = `${progress}%`;
     if (state.running) {
         text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
+        bar.className = 'running';
     } else if (state.result && state.result.status === 'done') {
-        text.textContent = `Transfer complete: ${state.filename} (CRC32 verified)`;
+        text.textContent = `Idle — last transfer ${state.filename} completed at `
+            + `${state.completed_at || '--:--:--'} (CRC32 verified, ${tput.toFixed(0)} KB/s)`;
+        bar.className = 'done';
     } else if (state.result && state.result.status === 'failed') {
-        text.textContent = `Transfer failed: ${state.filename} — ${state.result.error || 'unknown error'}`;
+        text.textContent = `Idle — last transfer ${state.filename} failed at `
+            + `${state.completed_at || '--:--:--'} (${state.result.error || 'unknown error'})`;
+        bar.className = 'failed';
+    } else if (state.result && state.result.status === 'stopped') {
+        text.textContent = `Idle — transfer ${state.filename} stopped by user at `
+            + `${state.completed_at || '--:--:--'}`;
+        bar.className = 'stopped';
     } else if (state.filename) {
-        text.textContent = `Last transfer: ${state.filename}`;
+        text.textContent = `Waiting for ${state.filename} to start`;
+        bar.className = 'running';
     } else {
         text.textContent = 'No transfer running';
+        bar.className = '';
     }
     chunks.textContent = `${sent} / ${total}`;
     throughput.textContent = `${tput.toFixed(1)} KB/s`;

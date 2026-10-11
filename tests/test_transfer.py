@@ -28,6 +28,20 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def cleanup_dir(path):
+    """Remove a temp storage dir, retrying.
+
+    On Windows the server's handler thread may still hold the output file open
+    when the test finishes, so an immediate unlink raises PermissionError.
+    """
+    import shutil
+    for _ in range(20):
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.exists(path):
+            return
+        time.sleep(0.1)
+
+
 class TestProtocol:
     """Test frame packing/unpacking and CRC32 checksums."""
 
@@ -111,6 +125,7 @@ class TestFileTransfer:
         time.sleep(0.5)
         yield srv, port, storage
         srv.stop()
+        cleanup_dir(storage)
 
     def test_basic_transfer(self, temp_file, server):
         """Client sends a file, server receives it correctly."""
@@ -133,7 +148,6 @@ class TestFileTransfer:
             received = f.read()
 
         assert original == received
-        os.unlink(received_path)
 
     def test_multiple_chunks(self, server):
         """File larger than one chunk is sent correctly."""
@@ -160,7 +174,6 @@ class TestFileTransfer:
             with open(received_path, 'rb') as f:
                 received = f.read()
             assert original == received
-            os.unlink(received_path)
         finally:
             os.unlink(path)
 

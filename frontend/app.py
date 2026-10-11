@@ -36,6 +36,7 @@ transfer_state = {
     'start_time': None,
     'recovery_time': None,
     'result': None,
+    'completed_at': None,
 }
 
 event_log = []
@@ -69,6 +70,10 @@ def _sync_transfer_state():
 
     result = _read_json(RESULT_FILE)
     if result and result.get('filename') == transfer_state['filename']:
+        # Stamp the first time we see this result so the UI can show how
+        # long the completed state has been held, rather than looking stuck.
+        if transfer_state.get('result') != result:
+            transfer_state['completed_at'] = time.strftime('%H:%M:%S')
         transfer_state['result'] = result
         transfer_state['running'] = False
         if result.get('status') == 'done':
@@ -153,6 +158,11 @@ def start_transfer():
     with open(REQUEST_FILE, 'w') as f:
         json.dump({'filename': filename}, f)
 
+    # Start this transfer with a clean event log. Without this, events from an
+    # earlier run stay in the list and interleave out of order with the new
+    # transfer's, which reads as though they belong together.
+    event_log.clear()
+
     transfer_state['running'] = True
     transfer_state['filename'] = filename
     transfer_state['progress'] = 0
@@ -161,6 +171,9 @@ def start_transfer():
     transfer_state['throughput'] = 0.0
     transfer_state['start_time'] = time.time()
     transfer_state['result'] = None
+    # The previous transfer's result is intentionally kept out of the new run's
+    # state, but its metrics stay visible in the panel until this one finishes.
+    transfer_state['completed_at'] = None
 
     log_event(f'Transfer queued: {filename} (bridge will pick it up)')
     socketio.emit('transfer_state', transfer_state)
