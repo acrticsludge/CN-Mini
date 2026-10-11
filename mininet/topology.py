@@ -86,8 +86,15 @@ def create_topology():
     server_src = os.path.join(base_dir, 'server', 'server.py')
     bridge_src = os.path.join(base_dir, 'mininet', 'bridge.py')
 
-    # h1 shares the host filesystem, so launch the bridge by host path.
-    net.get('h1').cmd(f'nohup python3 {bridge_src} > /tmp/bridge.log 2>&1 &')
+    # popen() — not cmd('... &') — is what puts a long-running process into the
+    # node's own network namespace. With cmd(), the bridge ended up in the host
+    # namespace where 10.0.0.0/24 is not routable, so every connect() failed
+    # with "[Errno 101] Network is unreachable" even though pingall was clean.
+    bridge_env = dict(os.environ, PYTHONUNBUFFERED='1')
+    net.get('h1').popen([sys.executable, bridge_src],
+                        stdout=open('/tmp/bridge.log', 'w'),
+                        stderr=subprocess.STDOUT,
+                        env=bridge_env)
 
     # h3 and h4 need the repo copied into their own namespaces.
     # Both listen on 9000: separate IPs, matching the client's default
@@ -95,10 +102,17 @@ def create_topology():
     for host, ip in [('h3', '10.0.0.3'), ('h4', '10.0.0.4')]:
         node = net.get(host)
         node.cmd(f'mkdir -p /tmp/src && cp -r {base_dir}/server {base_dir}/common /tmp/src/')
-        node.cmd(f'nohup python3 {server_src} --host {ip} '
-                 f'--port 9000 --storage /tmp/backup > /tmp/server_{host}.log 2>&1 &')
+        node.popen([sys.executable, f'/tmp/src/server/server.py',
+                    '--host', ip, '--port', '9000',
+                    '--storage', '/tmp/backup'],
+                   stdout=open(f'/tmp/server_{host}.log', 'w'),
+                   stderr=subprocess.STDOUT,
+                   env=dict(os.environ, PYTHONUNBUFFERED='1'))
         print(f'[TOPOLOGY] Backup server starting on {host} ({ip}:9000) '
               f'-> /tmp/backup  [log: /tmp/server_{host}.log]')
+
+    print('[TOPOLOGY] Bridge on h1 launched via popen() in h1 namespace')
+    print('[TOPOLOGY] Bridge log: /tmp/bridge.log  (check its IP line below)')
 
     print('[TOPOLOGY] Mininet started: 4 switches, 4 hosts')
     print('[TOPOLOGY] stored_files/ bind-mounted to h3,h4:/tmp/backup')

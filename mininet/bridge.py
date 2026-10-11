@@ -12,6 +12,7 @@ A transfer_cancel.json makes it kill a running client, so Stop really stops.
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -172,9 +173,40 @@ def process_request(request):
     return result
 
 
+def report_namespace():
+    """Log which network namespace this process is actually in.
+
+    A bridge launched in the host namespace instead of h1's cannot reach
+    10.0.0.0/24 at all, and every transfer then fails with
+    "[Errno 101] Network is unreachable" while pingall still looks fine.
+    Printing the observed IP makes that misconfiguration obvious instead of
+    leaving it to be inferred from failed connects.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(1)
+            s.connect(('10.0.0.3', 9000))
+            ip = s.getsockname()[0]
+    except OSError as e:
+        ip = f'unknown ({e.__class__.__name__}: {e})'
+
+    expected = SERVERS[0].split(':')[0]
+    print(f'[BRIDGE] Namespace IP: {ip} (h1 inside Mininet = 10.0.0.1)', flush=True)
+    if ip == 'unknown' or ip.startswith('unknown'):
+        print('[BRIDGE] WARNING: no route to the backup servers — this process '
+              'is probably NOT in h1 network namespace. Start it from '
+              'mininet/topology.py, which uses node.popen().', flush=True)
+    elif ip != '10.0.0.1':
+        print(f'[BRIDGE] WARNING: expected 10.0.0.1 (h1), got {ip}', flush=True)
+    else:
+        print(f'[BRIDGE] Namespace OK; clients will reach {expected}', flush=True)
+    return ip
+
+
 def main():
-    print(f"[BRIDGE] Watching {REQUEST_FILE}", flush=True)
-    print(f"[BRIDGE] Servers: {SERVERS}", flush=True)
+    print(f'[BRIDGE] Watching {REQUEST_FILE}', flush=True)
+    print(f'[BRIDGE] Servers: {SERVERS}', flush=True)
+    report_namespace()
     emit_event('Bridge started on h1')
     while True:
         try:
