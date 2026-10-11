@@ -39,7 +39,9 @@ transfer_state = {
     'completed_at': None,
 }
 
+EVENT_LOG_LIMIT = 200
 event_log = []
+_events_ingested = 0
 
 
 def _read_json(path):
@@ -79,13 +81,20 @@ def _sync_transfer_state():
         if result.get('status') == 'done':
             transfer_state['progress'] = 100
 
+    # The bridge rewrites its event file per transfer (append-only list, capped).
+    # Ingest by index rather than deduping by exact string: two identical lines
+    # are two real events (a retry, a second connect attempt), and the old
+    # string-set dedupe silently dropped them, which is why logs disappeared.
+    global _events_ingested
     events = _read_json(EVENTS_FILE)
-    if events:
-        known = set(event_log)
-        for entry in events:
-            if entry not in known:
-                event_log.append(entry)
-        del event_log[:-50]
+    if events is not None:
+        if len(events) < _events_ingested:
+            _events_ingested = 0  # file was reset by a new transfer
+        for entry in events[_events_ingested:]:
+            event_log.append(entry)
+        _events_ingested = len(events)
+        # Keep a generous tail; the dashboard renders the most recent ones.
+        del event_log[:-EVENT_LOG_LIMIT]
 
 
 def log_event(message):
@@ -162,6 +171,8 @@ def start_transfer():
     # earlier run stay in the list and interleave out of order with the new
     # transfer's, which reads as though they belong together.
     event_log.clear()
+    global _events_ingested
+    _events_ingested = 0
 
     transfer_state['running'] = True
     transfer_state['filename'] = filename
@@ -225,7 +236,7 @@ def get_status():
     _sync_transfer_state()
     return jsonify({
         'transfer': transfer_state,
-        'events': event_log[-20:],
+        'events': event_log[-50:],
     })
 
 

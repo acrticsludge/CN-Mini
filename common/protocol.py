@@ -67,9 +67,17 @@ def unpack_frame(data: bytes):
     }
 
 
-def pack_hello(filename: str, file_size: int) -> bytes:
-    """Create a HELLO frame with filename and file_size as JSON payload."""
-    payload = json.dumps({'filename': filename, 'file_size': file_size}).encode('utf-8')
+def pack_hello(filename: str, file_size: int, resume_from: int = 0) -> bytes:
+    """Create a HELLO frame with filename, size and resume offset as JSON payload.
+
+    resume_from is the chunk index the client will start at. 0 means a fresh
+    transfer, which tells the server to truncate any existing file.
+    """
+    payload = json.dumps({
+        'filename': filename,
+        'file_size': file_size,
+        'resume_from': resume_from,
+    }).encode('utf-8')
     return pack_frame(MSG_HELLO, 0, 0, 0, len(payload), payload)
 
 

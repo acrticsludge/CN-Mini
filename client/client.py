@@ -57,13 +57,16 @@ class BackupClient:
         filename = os.path.basename(filepath)
         file_size = os.path.getsize(filepath)
         total_chunks = (file_size + self.chunk_size - 1) // self.chunk_size
-
         if not self.connected:
             if not self.connect():
                 return False
 
-        # Send HELLO
-        hello = pack_hello(filename, file_size)
+        start_chunk = resume_from if resume_from > 0 else 0
+
+        # Send HELLO. The resume offset tells the server to keep an existing
+        # partial file; without it the server truncates (correct for a fresh
+        # transfer, which is what resume_from=0 means).
+        hello = pack_hello(filename, file_size, resume_from=start_chunk)
         try:
             self.sock.sendall(hello)
         except Exception as e:

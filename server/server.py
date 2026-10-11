@@ -60,21 +60,32 @@ class ClientHandler(threading.Thread):
             self._handle_resume(frame)
 
     def _handle_hello(self, frame):
-        """Process HELLO: prepare output file and send ready ACK."""
+        """Process HELLO: prepare output file and send ready ACK.
+
+        A resume_from > 0 preserves what is already on disk and seeks to the
+        resume point; a fresh transfer truncates, so re-sending a shorter file
+        over a longer stored one cannot leave the old file's tail behind.
+        """
         info = json.loads(frame['payload'].decode('utf-8'))
         self.filename = info['filename']
         self.file_size = info['file_size']
+        resume_from = int(info.get('resume_from', 0) or 0)
         self.total_chunks = (self.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         self.output_path = os.path.join(self.storage_dir, self.filename)
         os.makedirs(self.storage_dir, exist_ok=True)
-        # 'r+b' preserves an existing partial file so a RESUME can continue it;
-        # a fresh transfer still starts from an empty file.
-        self.file_handle = open(self.output_path, 'r+b' if os.path.exists(self.output_path) else 'wb')
+
+        resuming = resume_from > 0 and os.path.exists(self.output_path)
+        self.file_handle = open(self.output_path, 'r+b' if resuming else 'wb')
+        self._file_pos = resume_from * CHUNK_SIZE if resuming else 0
+        self.received_chunks = resume_from if resuming else 0
+        if resuming:
+            self.file_handle.seek(self._file_pos)
+
         self._start_time = time.time()
-        self._file_pos = 0
         self.send_ack(0)
+        mode = f'resume from chunk {resume_from}' if resuming else 'fresh transfer'
         print(f"[SERVER] Receiving '{self.filename}' ({self.file_size} bytes, "
-              f"{self.total_chunks} chunks) from {self.addr}")
+              f"{self.total_chunks} chunks, {mode}) from {self.addr}")
 
     def _handle_data(self, frame):
         """Process DATA: verify CRC32, write chunk, send ACK."""
