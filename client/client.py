@@ -177,6 +177,9 @@ if __name__ == '__main__':
 
     client = BackupClient(servers)
     try:
-        client.send_file(args.file, resume_from=args.resume)
+        ok = client.send_file(args.file, resume_from=args.resume)
     finally:
         client.close()
+    # Propagate the outcome. Exiting 0 here would make a failed transfer look
+    # successful to anything that only checks the exit code (the bridge does).
+    sys.exit(0 if ok else 1)

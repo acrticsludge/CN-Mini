@@ -190,7 +190,10 @@ class TestFileTransfer:
             client.close()
 
             # Nothing was written, so no reassembled file exists.
-            assert not os.path.exists(os.path.join(storage, os.path.basename(path)))
+            # HELLO opens the output file eagerly, so it may exist but must be empty.
+            target = os.path.join(storage, os.path.basename(path))
+            assert not os.path.exists(target) or os.path.getsize(target) == 0, \
+                f'corrupt chunk was written: {os.path.getsize(target)} bytes'
         finally:
             client.close()
             os.unlink(path)

@@ -73,6 +73,8 @@ def run_client(filename, filepath):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
     stored = None
+    completed = False
+    last_error = None
     deadline = time.time() + CLIENT_TIMEOUT
 
     try:
@@ -94,6 +96,7 @@ def run_client(filename, filepath):
                 except Exception:
                     pass
             elif line.startswith('[COMPLETE]'):
+                completed = True
                 # The client's final tally — the count of chunks the server ACKed.
                 try:
                     done = json.loads(line[len('[COMPLETE]'):].strip())
@@ -104,7 +107,11 @@ def run_client(filename, filepath):
             elif line.startswith('[CLIENT]') and not line.startswith('[CLIENT] Progress'):
                 # Stage changes only. Progress lines are carried by transfer_progress.json;
                 # emitting them as events buries the events that actually matter.
+                # Keep the last failure line so the dashboard can show why it failed
+                # instead of an opaque "client exited 1".
                 emit_event(line)
+                if 'fail' in line.lower() or 'error' in line.lower() or 'lost' in line.lower():
+                    last_error = line
             if os.path.exists(CANCEL_FILE):
                 emit_event(f'Stop requested — killing client for {filename}')
                 proc.send_signal(signal.SIGTERM)
@@ -128,10 +135,19 @@ def run_client(filename, filepath):
         emit_event(f"Server stored {stored['filename']} "
                    f"({stored.get('size', 0)} bytes, {stored.get('chunks', 0)} chunks)")
 
-    if proc.returncode == 0:
+    if proc.returncode == 0 and completed:
+        # Exit code 0 alone is not proof: a client that never connected still
+        # exits 0, and reporting that as "done" is how a failed transfer was
+        # previously shown as a success. Require the [COMPLETE] tally too.
         emit_event(f'Client finished {filename}')
         return 'done', None
-    return 'failed', f'client exited {proc.returncode}'
+
+    reason = last_error or (f'client exited {proc.returncode}'
+                            if proc.returncode != 0
+                            else 'client exited without completing a transfer')
+    if not reason.startswith('[CLIENT]'):
+        reason = f'[CLIENT] {reason}'
+    return 'failed', reason[:300]
 
 
 def process_request(request):

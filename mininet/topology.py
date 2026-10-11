@@ -69,15 +69,32 @@ def create_topology():
         node.cmd('mkdir -p /tmp/shared')
         node.cmd(f'mount --bind {shared_dir} /tmp/shared')
 
-    # Start bridge process on h1 to watch for transfer requests.
-    # h1 shares the host filesystem, so launch by host path.
+    # Start the bridge on h1 and the backup servers on h3/h4 automatically.
+    # Servers are children of the Mininet namespace: they die when Mininet does,
+    # so starting them here means one `sudo python3 mininet/topology.py` brings
+    # the whole system up instead of leaving ports silently unbound.
+    server_src = os.path.join(base_dir, 'server', 'server.py')
+
+    # h1 shares the host filesystem, so launch the bridge by host path.
     bridge_src = os.path.join(base_dir, 'mininet', 'bridge.py')
     net.get('h1').cmd(f'nohup python3 {bridge_src} > /tmp/bridge.log 2>&1 &')
+
+    # h3 and h4 need the repo copied into their own namespaces.
+    # Both listen on 9000: they are separate IPs, and that matches the client's
+    # default --servers 10.0.0.3:9000 10.0.0.4:9000 (so failover just works).
+    for host, ip in [('h3', '10.0.0.3'), ('h4', '10.0.0.4')]:
+        node = net.get(host)
+        node.cmd(f'mkdir -p /tmp/src && cp -r {base_dir}/server {base_dir}/common /tmp/src/')
+        node.cmd(f'nohup python3 /tmp/src/server/server.py --host {ip} '
+                 f'--port 9000 --storage /tmp/backup > /tmp/server_{host}.log 2>&1 &')
+        print(f"[TOPOLOGY] Backup server starting on {host} ({ip}:9000) "
+              f"-> /tmp/backup  [log: /tmp/server_{host}.log]")
 
     print("[TOPOLOGY] Mininet started: 4 switches, 4 hosts")
     print("[TOPOLOGY] stored_files/ bind-mounted to h3:/tmp/backup and h4:/tmp/backup")
     print("[TOPOLOGY] shared_files/ bind-mounted to all hosts at /tmp/shared/")
     print("[TOPOLOGY] Bridge running on h1 — watching for transfer requests")
+    print("[TOPOLOGY] Wait ~2s, then verify: mininet> h3 curl -s localhost:9000 || h3 netstat -tlnp | grep 9000")
     print("[TOPOLOGY] Type 'exit' or 'quit' to stop")
 
     # Open the Mininet CLI for interactive control
