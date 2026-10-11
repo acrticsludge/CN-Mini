@@ -234,10 +234,18 @@ class SDNController(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def flow_stats_reply_handler(self, ev):
-        """Process flow stats replies for congestion detection."""
+        """Report flows carrying unusual numbers of packets.
+
+        Table-miss (priority 0, wildcard match) is excluded: it counts every
+        packet the dataplane could not match, so it is a traffic gauge, not a
+        flow. Reporting it as congestion buried the real events in log spam.
+        """
         body = ev.msg.body
         for stat in body:
+            if stat.priority == 0:
+                continue
             packet_count = stat.packet_count
             if packet_count > 10000:
-                self.logger.warning("Congestion detected: flow %s has %d packets",
-                                    stat.match, packet_count)
+                self.logger.warning(
+                    "Congestion detected: flow %s has %d packets",
+                    stat.match, packet_count)

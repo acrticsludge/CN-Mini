@@ -51,6 +51,16 @@ def create_topology():
 
     net.start()
 
+    # Enable STP before any traffic flows. The mesh has loops, and a controller
+    # that floods broadcast (ARP) replicates each frame around every loop, which
+    # snowballs into a broadcast storm: table-miss counts hit the hundreds of
+    # thousands, ARP never resolves, and connect() fails with
+    # "[Errno 113] No route to host". STP gives the mesh a loop-free tree for
+    # broadcast while leaving the controller free to pick unicast paths.
+    for sw in net.switches:
+        sw.cmd('ovs-vsctl set bridge', sw, 'stp-enable=true')
+    print('[TOPOLOGY] STP enabled on all switches (mesh is looped; without it ARP storms)', flush=True)
+
     base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
     stored_dir = os.path.join(base_dir, 'stored_files')
     shared_dir = os.path.join(base_dir, 'shared_files')
