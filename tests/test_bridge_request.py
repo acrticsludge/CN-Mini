@@ -66,3 +66,16 @@ def test_terminal_progress_unmarks_busy(tmp_path):
         progress = json.load(f)
     assert progress['running'] is False
     assert progress['request_id'] == 'req-1'
+
+
+def test_terminal_progress_keeps_final_values(tmp_path):
+    """The terminal write must not zero the metrics the run just produced."""
+    mod = _point_at(_load_bridge(), tmp_path)
+    mod._write_terminal_progress('a.bin', 'req-1', running=False, last={
+        'chunk': 3, 'total': 3, 'throughput': 512.5, 'bytes': 24576})
+    with open(mod.PROGRESS_FILE) as f:
+        progress = json.load(f)
+    assert progress['running'] is False
+    assert progress['chunk'] == 3
+    assert progress['total'] == 3
+    assert progress['throughput'] == 512.5

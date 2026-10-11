@@ -154,15 +154,18 @@ function updateProgress(state) {
     } else if (state.result && state.result.status === 'done') {
         text.textContent = `Idle — last transfer ${state.filename} completed at `
             + `${state.completed_at || '--:--:--'} (CRC32 verified, ${tput.toFixed(0)} KB/s)`;
-        bar.className = 'done';
+        bar.style.width = '0%';
+        bar.className = '';
     } else if (state.result && state.result.status === 'failed') {
         text.textContent = `Idle — last transfer ${state.filename} failed at `
             + `${state.completed_at || '--:--:--'} (${state.result.error || 'unknown error'})`;
-        bar.className = 'failed';
+        bar.style.width = '0%';
+        bar.className = '';
     } else if (state.result && state.result.status === 'stopped') {
         text.textContent = `Idle — transfer ${state.filename} stopped by user at `
             + `${state.completed_at || '--:--:--'}`;
-        bar.className = 'stopped';
+        bar.style.width = '0%';
+        bar.className = '';
     } else if (state.filename) {
         text.textContent = `Waiting for ${state.filename} to start`;
         bar.className = 'running';

@@ -131,15 +131,26 @@ def clear_transfer_files():
             os.unlink(p)
 
 
-def _write_terminal_progress(filename, request_id, running=False, cancelled=False):
+def _write_terminal_progress(filename, request_id, running=False, cancelled=False,
+                             last=None):
     """Mark the progress file terminal so a later transfer is not blocked.
 
     The dashboard treats a progress file with running=True as "bridge busy".
     Without this, a finished transfer leaves running=True behind and every
     subsequent click is rejected as busy.
+
+    The last live values ride along: without them this write would zero the
+    metrics panel (chunk/total/throughput) at the exact moment the transfer
+    completes, which is why the dashboard showed 0/0 and 0 KB/s after every
+    successful run.
     """
-    _write_json(PROGRESS_FILE, {'filename': filename, 'request_id': request_id,
-                                'running': running, 'cancelled': cancelled})
+    entry = {'filename': filename, 'request_id': request_id,
+             'running': running, 'cancelled': cancelled}
+    if last:
+        for key in ('chunk', 'total', 'throughput', 'bytes'):
+            if key in last:
+                entry[key] = last[key]
+    _write_json(PROGRESS_FILE, entry)
 
 
 def run_client(filename, filepath, request_id=None):
@@ -152,6 +163,7 @@ def run_client(filename, filepath, request_id=None):
                             text=True, bufsize=1)
     completed = False
     last_error = None
+    last_progress = {}
     deadline = time.time() + CLIENT_TIMEOUT
 
     try:
@@ -163,6 +175,8 @@ def run_client(filename, filepath, request_id=None):
             if line.startswith('[PROGRESS]'):
                 try:
                     p = json.loads(line[len('[PROGRESS]'):].strip())
+                    last_progress = {k: p.get(k, 0) for k in
+                                     ('chunk', 'total', 'throughput', 'bytes')}
                     p.update({'filename': filename, 'request_id': request_id,
                               'running': True})
                     _write_json(PROGRESS_FILE, p)
@@ -201,7 +215,8 @@ def run_client(filename, filepath, request_id=None):
 
     if os.path.exists(CANCEL_FILE):
         os.unlink(CANCEL_FILE)
-        _write_terminal_progress(filename, request_id, running=False, cancelled=True)
+        _write_terminal_progress(filename, request_id, running=False,
+                                 cancelled=True, last=last_progress)
         return 'stopped', 'Cancelled by user'
 
     if proc.returncode == 0 and completed:
@@ -213,7 +228,8 @@ def run_client(filename, filepath, request_id=None):
         # waiting for it would hang every transfer. The per-chunk ACK tally in
         # [COMPLETE] is the client-side receipt; the Stored Files panel is the
         # server-side proof.)
-        _write_terminal_progress(filename, request_id, running=False)
+        _write_terminal_progress(filename, request_id, running=False,
+                                 last=last_progress)
         emit_event(f'Client finished {filename}')
         return 'done', None
 
@@ -222,7 +238,8 @@ def run_client(filename, filepath, request_id=None):
                             else 'client exited without completing a transfer')
     if not reason.startswith('[CLIENT]'):
         reason = f'[CLIENT] {reason}'
-    _write_terminal_progress(filename, request_id, running=False)
+    _write_terminal_progress(filename, request_id, running=False,
+                             last=last_progress)
     return 'failed', reason[:300]
 
 

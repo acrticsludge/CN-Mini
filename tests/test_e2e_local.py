@@ -126,6 +126,10 @@ def test_sequential_transfers_both_settle_on_their_own_result(chain):
     assert state['transfer']['result']['request_id'] == id_a
     assert state['transfer']['running'] is False
     assert state['bridge']['alive'] is True
+    # Final metrics survive completion: 24 KB = 3 chunks, throughput measured.
+    assert state['transfer']['chunks_sent'] == 3
+    assert state['transfer']['total_chunks'] == 3
+    assert client.get('/api/metrics').get_json()['throughput'] > 0
 
     second = client.post('/api/start-transfer', json={'filename': 'b.bin'})
     assert second.status_code == 200
