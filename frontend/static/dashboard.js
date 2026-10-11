@@ -75,6 +75,11 @@ document.getElementById('btn-start').addEventListener('click', async () => {
     }
     startInFlight = true;
     document.getElementById('btn-start').disabled = true;
+    // Optimistic "Transferring…" right now — not on the next 2s tick — so the
+    // click visibly takes. The sync below reconciles with the server instantly.
+    transferRunning = true;
+    updateProgress({ running: true, filename: selectedFile, progress: 0,
+                     chunks_sent: 0, total_chunks: 0, throughput: 0 });
     try {
         const response = await fetch('/api/start-transfer', {
             method: 'POST',
@@ -91,6 +96,7 @@ document.getElementById('btn-start').addEventListener('click', async () => {
         addEvent(`Transfer request failed: ${e}`);
     } finally {
         startInFlight = false;
+        await pollOnce();
         document.getElementById('btn-start').disabled = transferRunning;
     }
 });
@@ -259,7 +265,7 @@ function formatSize(bytes) {
 loadFiles();
 loadBrowse();
 document.getElementById('btn-refresh-browse').addEventListener('click', loadBrowse);
-setInterval(async () => {
+async function pollOnce() {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();
     document.getElementById('recovery-value').textContent =
@@ -310,4 +316,6 @@ setInterval(async () => {
             eventLog.appendChild(div);
         }
     } catch (e) { /* status not available yet */ }
-}, 2000);
+}
+setInterval(pollOnce, 2000);
+pollOnce();

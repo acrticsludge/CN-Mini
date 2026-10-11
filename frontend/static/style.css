@@ -155,7 +155,18 @@ main {
 
 /* Transfer state, readable at a glance: in flight vs. settled. */
 #progress-bar.running {
-    background: linear-gradient(90deg, #4ecca3, #f0a500);
+    background-image:
+        linear-gradient(45deg, rgba(255, 255, 255, 0.25) 25%, transparent 25%,
+                        transparent 50%, rgba(255, 255, 255, 0.25) 50%,
+                        rgba(255, 255, 255, 0.25) 75%, transparent 75%),
+        linear-gradient(90deg, #4ecca3, #f0a500);
+    background-size: 1rem 1rem, auto;
+    animation: barberpole 0.8s linear infinite;
+}
+
+@keyframes barberpole {
+    from { background-position: 1rem 0, 0 0; }
+    to { background-position: 0 0, 0 0; }
 }
 
 #progress-bar.done {
