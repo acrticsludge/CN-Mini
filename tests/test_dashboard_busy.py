@@ -39,7 +39,7 @@ def dash(tmp_path):
     mod.EVENTS_FILE = os.path.join(shared, 'transfer_events.json')
     mod.CANCEL_FILE = os.path.join(shared, 'transfer_cancel.json')
     mod.transfer_state.update({
-        'running': False, 'filename': None, 'progress': 0,
+        'running': False, 'filename': None, 'request_id': None, 'progress': 0,
         'chunks_sent': 0, 'total_chunks': 0, 'throughput': 0.0,
         'start_time': None, 'recovery_time': None, 'result': None,
         'completed_at': None,
@@ -93,3 +93,34 @@ def test_metrics_reflect_bridge_progress(dash):
                    'total': 10, 'throughput': 42.0}, f)
     metrics = client.get('/api/metrics').get_json()
     assert metrics['throughput'] == 42.0
+
+
+def test_result_with_foreign_request_id_is_ignored(dash):
+    """A result from another run (e.g. a duplicate bridge) must not settle this one."""
+    client = dash.app.test_client()
+    first = client.post('/api/start-transfer', json={'filename': 'a.bin'})
+    my_id = first.get_json()['request_id']
+    with open(dash.RESULT_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': 'someone-elses-run',
+                   'status': 'failed', 'error': '[CLIENT] boom'}, f)
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['result'] is None
+    assert state['running'] is True
+    with open(dash.RESULT_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': my_id, 'status': 'done'}, f)
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['result']['status'] == 'done'
+    assert state['running'] is False
+
+
+def test_legacy_files_without_request_id_still_match(dash):
+    """Files written by an older bridge (no id) match by filename, not orphaned."""
+    client = dash.app.test_client()
+    assert client.post('/api/start-transfer', json={'filename': 'a.bin'}).status_code == 200
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'running': True, 'chunk': 1,
+                   'total': 10, 'throughput': 1.0}, f)
+    with open(dash.RESULT_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'status': 'done'}, f)
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['result']['status'] == 'done'

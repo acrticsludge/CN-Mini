@@ -4,6 +4,7 @@ Serves a single-page app with live topology, transfer control, metrics, and even
 """
 import json
 import os
+import threading
 import time
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -31,6 +32,7 @@ LINK_RESULT_FILE = os.path.join(SHARED_DIR, 'link_result.json')
 transfer_state = {
     'running': False,
     'filename': None,
+    'request_id': None,
     'progress': 0,
     'chunks_sent': 0,
     'total_chunks': 0,
@@ -40,6 +42,39 @@ transfer_state = {
     'result': None,
     'completed_at': None,
 }
+
+# Serialises concurrent POSTs: two clicks arriving together must not both pass
+# the busy check and both write. The second one waits, re-checks, and gets 409.
+_start_lock = threading.Lock()
+_request_counter = 0
+
+# A queued run with no terminal result counts as busy for this long, covering
+# the pickup window where the bridge has consumed the request but not yet
+# written progress. Older than this with no result, the run is presumed dead.
+PENDING_GRACE = 120
+
+TERMINAL_STATUSES = ('done', 'failed', 'stopped')
+
+
+def _new_request_id():
+    """Unique id per click so results can only ever match their own run."""
+    global _request_counter
+    _request_counter += 1
+    return f'{int(time.time() * 1000)}-{os.getpid()}-{_request_counter}'
+
+
+def _matches_current(doc):
+    """True when a progress/result file belongs to the currently queued run.
+
+    Matches on request_id; falls back to filename so files written mid-flight
+    by an older bridge (no id) are still picked up instead of orphaned.
+    """
+    if not doc or transfer_state.get('filename') is None:
+        return False
+    current_id = transfer_state.get('request_id')
+    if current_id and doc.get('request_id'):
+        return doc.get('request_id') == current_id
+    return doc.get('filename') == transfer_state['filename']
 
 EVENT_LOG_LIMIT = 200
 event_log = []
@@ -81,7 +116,32 @@ def _bridge_busy():
             age = 0
         if age < STALE_PROGRESS_AGE:
             return True
+    # Pickup window: we queued a run that the bridge has consumed but not yet
+    # reflected in any file. Until its result lands (or it goes stale), a new
+    # click must wait — otherwise it clobbers the run it cannot yet see.
+    if transfer_state.get('running') and transfer_state.get('request_id'):
+        res = _read_json(RESULT_FILE)
+        if not (res and _matches_current(res)
+                and res.get('status') in TERMINAL_STATUSES):
+            started = transfer_state.get('start_time') or 0
+            if time.time() - started < PENDING_GRACE:
+                return True
     return False
+
+
+def _bridge_status():
+    """Liveness for the UI, from the bridge's heartbeat file."""
+    alive_path = os.path.join(SHARED_DIR, 'bridge_alive.json')
+    info = _read_json(alive_path)
+    if not info:
+        return {'alive': False, 'age_s': None, 'pid': None}
+    try:
+        age = time.time() - os.path.getmtime(alive_path)
+    except OSError:
+        age = None
+    return {'alive': age is not None and age < 10,
+            'age_s': round(age, 1) if age is not None else None,
+            'pid': info.get('pid')}
 
 
 def _sync_transfer_state():
@@ -92,7 +152,7 @@ def _sync_transfer_state():
     partially written or missing file must not take the endpoint down.
     """
     progress = _read_json(PROGRESS_FILE)
-    if progress and progress.get('filename') == transfer_state['filename']:
+    if _matches_current(progress):
         transfer_state['running'] = bool(progress.get('running'))
         transfer_state['chunks_sent'] = progress.get('chunk', 0)
         transfer_state['total_chunks'] = progress.get('total', 0)
@@ -101,7 +161,7 @@ def _sync_transfer_state():
             transfer_state['progress'] = 100
 
     result = _read_json(RESULT_FILE)
-    if result and result.get('filename') == transfer_state['filename']:
+    if _matches_current(result):
         # Stamp the first time we see this result so the UI can show how
         # long the completed state has been held, rather than looking stuck.
         if transfer_state.get('result') != result:
@@ -190,20 +250,23 @@ def start_transfer():
     if not os.path.isfile(src):
         return jsonify({'error': f'File not found in shared_files/: {filename}'}), 404
 
-    _sync_transfer_state()
-    # The bridge is single-threaded: a second request while one is pending or
-    # running does not queue — it overwrites REQUEST_FILE and deletes the live
-    # run's progress/result mid-flight. Reject it instead so a rapid double
-    # click can never silently eat the first transfer.
-    if _bridge_busy():
-        return jsonify({'error': 'Transfer already running — wait for it or Stop it',
-                        'filename': transfer_state.get('filename')}), 409
+    with _start_lock:
+        _sync_transfer_state()
+        # The bridge is single-threaded: a second request while one is pending or
+        # running does not queue — it overwrites REQUEST_FILE and deletes the live
+        # run's progress/result mid-flight. Reject it instead so a rapid double
+        # click can never silently eat the first transfer.
+        if _bridge_busy():
+            return jsonify({'error': 'Transfer already running — wait for it or Stop it',
+                            'filename': transfer_state.get('filename')}), 409
 
-    # Clear stale bridge bookkeeping so this run's progress is unambiguous.
-    for p in (RESULT_FILE, PROGRESS_FILE, EVENTS_FILE, CANCEL_FILE):
-        if os.path.exists(p):
-            os.unlink(p)
-    _write_json_atomic(REQUEST_FILE, {'filename': filename})
+        # Clear stale bridge bookkeeping so this run's progress is unambiguous.
+        for p in (RESULT_FILE, PROGRESS_FILE, EVENTS_FILE, CANCEL_FILE):
+            if os.path.exists(p):
+                os.unlink(p)
+        request_id = _new_request_id()
+        _write_json_atomic(REQUEST_FILE, {'filename': filename,
+                                          'request_id': request_id})
 
     # New run, new event file on the bridge side: reset the ingest cursor so
     # the fresh events are picked up from index 0. The dashboard's own history
@@ -213,6 +276,7 @@ def start_transfer():
 
     transfer_state['running'] = True
     transfer_state['filename'] = filename
+    transfer_state['request_id'] = request_id
     transfer_state['progress'] = 0
     transfer_state['chunks_sent'] = 0
     transfer_state['total_chunks'] = 0
@@ -225,7 +289,8 @@ def start_transfer():
 
     log_event(f'Transfer queued: {filename} (bridge will pick it up)')
     socketio.emit('transfer_state', transfer_state)
-    return jsonify({'status': 'queued', 'filename': filename})
+    return jsonify({'status': 'queued', 'filename': filename,
+                    'request_id': request_id})
 
 
 @app.route('/api/stop-transfer', methods=['POST'])
@@ -313,6 +378,12 @@ def _request_link(sw1, sw2, state):
                              'mininet/topology.py running?'}), 504
 
 
+@app.route('/api/bridge')
+def bridge_status():
+    """Bridge liveness for the dashboard indicator."""
+    return jsonify(_bridge_status())
+
+
 @app.route('/api/status')
 def get_status():
     """Get current system status."""
@@ -320,6 +391,7 @@ def get_status():
     return jsonify({
         'transfer': transfer_state,
         'events': event_log[-50:],
+        'bridge': _bridge_status(),
     })
 
 

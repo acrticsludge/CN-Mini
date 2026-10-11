@@ -31,6 +31,14 @@ RESULT_FILE = os.path.join(SHARED_DIR, 'transfer_result.json')
 PROGRESS_FILE = os.path.join(SHARED_DIR, 'transfer_progress.json')
 EVENTS_FILE = os.path.join(SHARED_DIR, 'transfer_events.json')
 CANCEL_FILE = os.path.join(SHARED_DIR, 'transfer_cancel.json')
+# Singleton lock: every `sudo python3 mininet/topology.py` run spawns a bridge,
+# and nothing kills the old one. Two bridges on the same request file means
+# duplicate transfers and interleaved progress/result writes — "stored but the
+# UI says failed". The second bridge exits loudly instead of joining in.
+LOCK_FILE = os.path.join(SHARED_DIR, 'bridge.lock')
+# Liveness signal for the dashboard: pid, start time and last poll, so the UI
+# can show whether the bridge is actually alive instead of guessing.
+ALIVE_FILE = os.path.join(SHARED_DIR, 'bridge_alive.json')
 
 SERVERS = os.environ.get('BACKUP_SERVERS', '10.0.0.3:9000,10.0.0.4:9000').split(',')
 POLL_INTERVAL = float(os.environ.get('BRIDGE_POLL_INTERVAL', '0.5'))
@@ -43,6 +51,56 @@ def _write_json(path, data):
     with open(tmp, 'w') as f:
         json.dump(data, f)
     os.replace(tmp, path)
+
+
+def claim_bridge_lock(max_age=10):
+    """Take the singleton lock. Returns True when this is the only bridge.
+
+    A lockfile touched within max_age seconds means a live bridge is already
+    watching this directory, so the newcomer must exit instead of racing it
+    on the same request file. An older lockfile is a corpse from a dead run
+    and is reclaimed. Liveness is file freshness — never a pid probe, so this
+    works identically on Linux and Windows.
+    """
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(LOCK_FILE, flags)
+    except FileExistsError:
+        try:
+            age = time.time() - os.path.getmtime(LOCK_FILE)
+        except OSError:
+            age = max_age + 1
+        if age < max_age:
+            return False
+        try:
+            os.unlink(LOCK_FILE)
+        except OSError:
+            pass
+        try:
+            fd = os.open(LOCK_FILE, flags)
+        except FileExistsError:
+            return False
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    finally:
+        os.close(fd)
+    return True
+
+
+def write_heartbeat(started_at):
+    """Publish liveness for the dashboard's bridge indicator."""
+    try:
+        _write_json(ALIVE_FILE, {
+            'pid': os.getpid(),
+            'started_at': started_at,
+            'last_poll': time.strftime('%H:%M:%S'),
+            'watching': REQUEST_FILE,
+            'servers': SERVERS,
+        })
+        # Touch the lock too: freshness is what makes it a live lock.
+        os.utime(LOCK_FILE, None)
+    except Exception:
+        pass
 
 
 def emit_event(message):
@@ -73,18 +131,18 @@ def clear_transfer_files():
             os.unlink(p)
 
 
-def _write_terminal_progress(filename, running=False, cancelled=False):
+def _write_terminal_progress(filename, request_id, running=False, cancelled=False):
     """Mark the progress file terminal so a later transfer is not blocked.
 
     The dashboard treats a progress file with running=True as "bridge busy".
     Without this, a finished transfer leaves running=True behind and every
     subsequent click is rejected as busy.
     """
-    _write_json(PROGRESS_FILE, {'filename': filename, 'running': running,
-                                'cancelled': cancelled})
+    _write_json(PROGRESS_FILE, {'filename': filename, 'request_id': request_id,
+                                'running': running, 'cancelled': cancelled})
 
 
-def run_client(filename, filepath):
+def run_client(filename, filepath, request_id=None):
     """Run the client, streaming progress. Returns (status, error)."""
     cmd = [sys.executable, CLIENT_SCRIPT, filepath, '--servers'] + SERVERS
     print(f"[BRIDGE] Running: {' '.join(cmd)}", flush=True)
@@ -92,7 +150,6 @@ def run_client(filename, filepath):
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
-    stored = None
     completed = False
     last_error = None
     deadline = time.time() + CLIENT_TIMEOUT
@@ -106,13 +163,9 @@ def run_client(filename, filepath):
             if line.startswith('[PROGRESS]'):
                 try:
                     p = json.loads(line[len('[PROGRESS]'):].strip())
-                    p.update({'filename': filename, 'running': True})
+                    p.update({'filename': filename, 'request_id': request_id,
+                              'running': True})
                     _write_json(PROGRESS_FILE, p)
-                except Exception:
-                    pass
-            elif line.startswith('[STORED]'):
-                try:
-                    stored = json.loads(line[len('[STORED]'):].strip())
                 except Exception:
                     pass
             elif line.startswith('[COMPLETE]'):
@@ -148,18 +201,19 @@ def run_client(filename, filepath):
 
     if os.path.exists(CANCEL_FILE):
         os.unlink(CANCEL_FILE)
-        _write_terminal_progress(filename, running=False, cancelled=True)
+        _write_terminal_progress(filename, request_id, running=False, cancelled=True)
         return 'stopped', 'Cancelled by user'
-
-    if stored:
-        emit_event(f"Server stored {stored['filename']} "
-                   f"({stored.get('size', 0)} bytes, {stored.get('chunks', 0)} chunks)")
 
     if proc.returncode == 0 and completed:
         # Exit code 0 alone is not proof: a client that never connected still
         # exits 0, and reporting that as "done" is how a failed transfer was
         # previously shown as a success. Require the [COMPLETE] tally too.
-        _write_terminal_progress(filename, running=False)
+        # (Note: there is deliberately no [STORED] check here. The server
+        # prints [STORED], but the bridge only sees the *client's* stdout, so
+        # waiting for it would hang every transfer. The per-chunk ACK tally in
+        # [COMPLETE] is the client-side receipt; the Stored Files panel is the
+        # server-side proof.)
+        _write_terminal_progress(filename, request_id, running=False)
         emit_event(f'Client finished {filename}')
         return 'done', None
 
@@ -168,27 +222,37 @@ def run_client(filename, filepath):
                             else 'client exited without completing a transfer')
     if not reason.startswith('[CLIENT]'):
         reason = f'[CLIENT] {reason}'
-    _write_terminal_progress(filename, running=False)
+    _write_terminal_progress(filename, request_id, running=False)
     return 'failed', reason[:300]
 
 
 def process_request(request):
     """Run the transfer for the requested file. Returns a result dict."""
     filename = request.get('filename', '')
+    request_id = request.get('request_id')
     if not filename or '..' in filename or '/' in filename or '\\' in filename:
-        return {'filename': filename, 'status': 'failed', 'error': 'Invalid filename'}
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed', 'error': 'Invalid filename'}
 
     filepath = os.path.join(SHARED_DIR, filename)
     if not os.path.isfile(filepath):
-        return {'filename': filename, 'status': 'failed', 'error': 'File not found'}
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed', 'error': 'File not found'}
 
     clear_transfer_files()
+    # Pickup marker BEFORE the client runs: the dashboard's busy check must see
+    # this run from the moment it is claimed, not from the first [PROGRESS]
+    # line — otherwise a click in that window looks idle and clobbers this run.
+    _write_json(PROGRESS_FILE, {'filename': filename, 'request_id': request_id,
+                                'running': True, 'chunk': 0, 'total': 0,
+                                'throughput': 0.0})
     try:
-        status, error = run_client(filename, filepath)
+        status, error = run_client(filename, filepath, request_id)
     except Exception as e:
-        return {'filename': filename, 'status': 'failed', 'error': str(e)}
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed', 'error': str(e)}
 
-    result = {'filename': filename, 'status': status}
+    result = {'filename': filename, 'request_id': request_id, 'status': status}
     if error:
         result['error'] = error
     return result
@@ -225,12 +289,20 @@ def report_namespace():
 
 
 def main():
-    print(f'[BRIDGE] Watching {REQUEST_FILE}', flush=True)
+    started_at = time.strftime('%H:%M:%S')
+    if not claim_bridge_lock():
+        print('[BRIDGE] Another bridge is already watching '
+              f'{SHARED_DIR} — exiting instead of racing it. '
+              'If no bridge should be running, delete '
+              f'{LOCK_FILE} and restart.', flush=True)
+        sys.exit(1)
+    print(f'[BRIDGE] Watching {REQUEST_FILE} (lock held, pid {os.getpid()})', flush=True)
     print(f'[BRIDGE] Servers: {SERVERS}', flush=True)
     report_namespace()
     emit_event('Bridge started on h1')
     while True:
         try:
+            write_heartbeat(started_at)
             if os.path.isfile(REQUEST_FILE):
                 try:
                     with open(REQUEST_FILE, 'r') as f:

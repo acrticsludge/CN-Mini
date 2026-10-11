@@ -61,6 +61,8 @@ def test_process_request_missing_file(tmp_path):
 
 def test_terminal_progress_unmarks_busy(tmp_path):
     mod = _point_at(_load_bridge(), tmp_path)
-    mod._write_terminal_progress('a.bin', running=False)
+    mod._write_terminal_progress('a.bin', 'req-1', running=False)
     with open(mod.PROGRESS_FILE) as f:
-        assert json.load(f)['running'] is False
+        progress = json.load(f)
+    assert progress['running'] is False
+    assert progress['request_id'] == 'req-1'

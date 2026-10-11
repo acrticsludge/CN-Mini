@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from mininet.net import Mininet
 from mininet.node import OVSSwitch, RemoteController
 from mininet.link import TCLink
@@ -84,6 +85,20 @@ def _run_topology():
     # so starting them here means one `sudo python3 mininet/topology.py` brings
     # the whole system up instead of leaving ports silently unbound.
     bridge_src = os.path.join(base_dir, 'mininet', 'bridge.py')
+
+    # Kill leftovers from earlier runs first. popen() children are NOT reaped
+    # by net.stop(), so without this every restart adds another bridge watching
+    # the same request file: duplicate transfers and interleaved results that
+    # read as "stored but the UI says failed". The bridge's lockfile is the
+    # backstop; this is the cleanup. Best-effort: missing pkill is not fatal.
+    for pattern in ('mininet/bridge.py', '/tmp/src/server/server.py'):
+        try:
+            subprocess.run(['pkill', '-f', pattern],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=10)
+        except Exception:
+            pass
+    time.sleep(0.5)
 
     # popen() — not cmd('... &') — is what puts a long-running process into the
     # node's own network namespace. With cmd(), the bridge ended up in the host

@@ -264,14 +264,17 @@ setInterval(async () => {
     try {
         const res = await fetch('/api/transfer-result');
         const tr = await res.json();
-        if ((tr.status === 'done' || tr.status === 'failed') && lastResultSeen !== tr.filename + tr.status) {
-            lastResultSeen = tr.filename + tr.status;
+        const trKey = (tr.request_id || tr.filename) + tr.status;
+        if ((tr.status === 'done' || tr.status === 'failed' || tr.status === 'stopped') && lastResultSeen !== trKey) {
+            lastResultSeen = trKey;
             if (tr.status === 'done') {
                 addEvent(`Transfer complete: ${tr.filename} (CRC32 verified)`);
+                loadFiles();
+            } else if (tr.status === 'stopped') {
+                addEvent(`Transfer stopped: ${tr.filename}`);
             } else {
                 addEvent(`Transfer failed: ${tr.filename} — ${tr.error || 'unknown error'}`);
             }
-            loadFiles();
         }
     } catch (e) { /* bridge result not available yet */ }
     // Always sync progress + events: the 'transfer_state' socket emit only
@@ -284,6 +287,15 @@ setInterval(async () => {
             transferRunning = !!sdata.transfer.running;
             if (!startInFlight) {
                 document.getElementById('btn-start').disabled = transferRunning;
+            }
+        }
+        const b = sdata.bridge;
+        if (b) {
+            const bridgeEl = document.getElementById('bridge-value');
+            if (bridgeEl) {
+                bridgeEl.textContent = b.alive
+                    ? `alive (pid ${b.pid}, ${b.age_s}s ago)`
+                    : 'not seen — is mininet/topology.py running?';
             }
         }
         const eventLog = document.getElementById('event-log');
