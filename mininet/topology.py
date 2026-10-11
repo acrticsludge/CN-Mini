@@ -22,7 +22,7 @@ from mininet.log import setLogLevel
 from linkctl import serve_link_requests
 
 
-def create_topology():
+def _run_topology():
     """Create and start the Mininet network topology."""
     net = Mininet(controller=None, switch=OVSSwitch, link=TCLink)
     net.addController('c0', controller=RemoteController, ip='127.0.0.1', port=6633)
@@ -138,6 +138,35 @@ def create_topology():
         cli_thread.join(timeout=2)
         net.stop()
         print('[TOPOLOGY] Mininet stopped')
+
+
+def create_topology():
+    """Start the topology and guarantee it is torn down on any failure.
+
+    The body runs inside try/finally so an exception after net.start() still
+    calls net.stop(). Without that, a crash (the earlier NameError at the
+    bridge launch) leaves every switch port in the host namespace, and the
+    next run dies in addLink with:
+        Error creating interface pair (s1-eth2,s2-eth2):
+        RTNETLINK answers: File exists
+    because those interfaces still exist from the dead run.
+    """
+    net = None
+    try:
+        _run_topology()
+    except Exception:
+        print('[TOPOLOGY] Startup failed — cleaning up Mininet state so the '
+              'next run can bind its interfaces.', flush=True)
+        raise
+    finally:
+        if net is None:
+            # _run_topology builds its own net; clean globally instead.
+            try:
+                from mininet.clean import cleanup
+                cleanup()
+                print('[TOPOLOGY] Mininet cleaned', flush=True)
+            except Exception as e:
+                print(f'[TOPOLOGY] Cleanup failed: {e}', flush=True)
 
 
 if __name__ == '__main__':
