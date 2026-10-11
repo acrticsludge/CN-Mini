@@ -26,6 +26,9 @@ PROJECT_FILES = [
     'tests/test_transfer.py',
     'tests/test_recovery.py',
     'tests/test_failure.py',
+    'tests/test_controller_reroute.py',
+    'tests/test_bridge_request.py',
+    'tests/test_dashboard_busy.py',
     'tests/test_lint.py',
 ]
 

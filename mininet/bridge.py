@@ -60,9 +60,28 @@ def emit_event(message):
 
 
 def clear_transfer_files():
-    for p in (REQUEST_FILE, RESULT_FILE, PROGRESS_FILE, EVENTS_FILE, CANCEL_FILE):
+    """Clear stale bookkeeping for a new transfer — but never the request.
+
+    The main loop already consumed (unlinked) the request before calling this.
+    Deleting REQUEST_FILE here as well raced with the dashboard: a click that
+    landed between the consume and this clear had its request deleted before
+    the bridge ever saw it, so the transfer never started and the user had to
+    click again — the "took 5 clicks" symptom.
+    """
+    for p in (RESULT_FILE, PROGRESS_FILE, EVENTS_FILE, CANCEL_FILE):
         if os.path.exists(p):
             os.unlink(p)
+
+
+def _write_terminal_progress(filename, running=False, cancelled=False):
+    """Mark the progress file terminal so a later transfer is not blocked.
+
+    The dashboard treats a progress file with running=True as "bridge busy".
+    Without this, a finished transfer leaves running=True behind and every
+    subsequent click is rejected as busy.
+    """
+    _write_json(PROGRESS_FILE, {'filename': filename, 'running': running,
+                                'cancelled': cancelled})
 
 
 def run_client(filename, filepath):
@@ -129,7 +148,7 @@ def run_client(filename, filepath):
 
     if os.path.exists(CANCEL_FILE):
         os.unlink(CANCEL_FILE)
-        _write_json(PROGRESS_FILE, {'filename': filename, 'running': False, 'cancelled': True})
+        _write_terminal_progress(filename, running=False, cancelled=True)
         return 'stopped', 'Cancelled by user'
 
     if stored:
@@ -140,6 +159,7 @@ def run_client(filename, filepath):
         # Exit code 0 alone is not proof: a client that never connected still
         # exits 0, and reporting that as "done" is how a failed transfer was
         # previously shown as a success. Require the [COMPLETE] tally too.
+        _write_terminal_progress(filename, running=False)
         emit_event(f'Client finished {filename}')
         return 'done', None
 
@@ -148,6 +168,7 @@ def run_client(filename, filepath):
                             else 'client exited without completing a transfer')
     if not reason.startswith('[CLIENT]'):
         reason = f'[CLIENT] {reason}'
+    _write_terminal_progress(filename, running=False)
     return 'failed', reason[:300]
 
 
@@ -211,8 +232,18 @@ def main():
     while True:
         try:
             if os.path.isfile(REQUEST_FILE):
-                with open(REQUEST_FILE, 'r') as f:
-                    request = json.load(f)
+                try:
+                    with open(REQUEST_FILE, 'r') as f:
+                        request = json.load(f)
+                except Exception as e:
+                    # Half-written or corrupt request (e.g. dashboard killed
+                    # mid-write). Drop it instead of retrying it forever.
+                    print(f"[BRIDGE] Bad request file, dropping it: {e}", flush=True)
+                    try:
+                        os.unlink(REQUEST_FILE)
+                    except OSError:
+                        pass
+                    continue
                 os.unlink(REQUEST_FILE)
                 result = process_request(request)
                 result['timestamp'] = time.strftime('%H:%M:%S')

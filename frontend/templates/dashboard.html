@@ -6,7 +6,8 @@
     <title>Distributed Backup System — Dashboard</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="/static/style.css">
-    <script src="/static/socket.io.min.js"></script>
+    <!-- Live updates use REST polling (see dashboard.js). A socket.io client
+         library can be dropped in here later; the code probes for `io`. -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>

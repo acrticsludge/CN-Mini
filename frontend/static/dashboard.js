@@ -3,9 +3,10 @@
  * transfer control, metrics charts, file listing.
  */
 
-// Live updates via WebSocket when the client library loads; REST polling covers the rest.
+// Live updates via WebSocket when a client library is present; REST polling
+// below is the primary channel and always runs.
 let socket = null;
-try { socket = io(); } catch (e) { socket = null; }
+try { socket = (typeof io !== 'undefined') ? io() : null; } catch (e) { socket = null; }
 const ctx = document.getElementById('throughput-chart').getContext('2d');
 
 // Throughput chart
@@ -36,6 +37,8 @@ const throughputChart = (typeof Chart === 'undefined') ? null : new Chart(ctx, {
 let throughputData = [];
 let selectedFile = null;
 let lastResultSeen = null;
+let transferRunning = false;
+let startInFlight = false;
 
 // Socket events (only when the library loaded; otherwise the polling below covers updates)
 if (socket) {
@@ -63,16 +66,32 @@ document.getElementById('btn-start').addEventListener('click', async () => {
         addEvent('Pick a file from Shared Files first');
         return;
     }
-    const response = await fetch('/api/start-transfer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: selectedFile })
-    });
-    const result = await response.json();
-    if (result.error) {
-        addEvent(`Transfer failed: ${result.error}`);
-    } else {
-        addEvent(`Transfer queued: ${result.filename} — bridge will pick it up`);
+    if (startInFlight) {
+        return; // double click while the first POST is still going out
+    }
+    if (transferRunning) {
+        addEvent('Transfer already running — wait for it or press Stop');
+        return;
+    }
+    startInFlight = true;
+    document.getElementById('btn-start').disabled = true;
+    try {
+        const response = await fetch('/api/start-transfer', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: selectedFile })
+        });
+        const result = await response.json();
+        if (!response.ok || result.error) {
+            addEvent(`Transfer rejected: ${result.error || response.status}`);
+        } else {
+            addEvent(`Transfer queued: ${result.filename} — bridge will pick it up`);
+        }
+    } catch (e) {
+        addEvent(`Transfer request failed: ${e}`);
+    } finally {
+        startInFlight = false;
+        document.getElementById('btn-start').disabled = transferRunning;
     }
 });
 
@@ -255,21 +274,25 @@ setInterval(async () => {
             loadFiles();
         }
     } catch (e) { /* bridge result not available yet */ }
-    if (!socket) {
-        try {
-            const st = await fetch('/api/status');
-            const sdata = await st.json();
-            if (sdata.transfer) {
-                updateProgress(sdata.transfer);
+    // Always sync progress + events: the 'transfer_state' socket emit only
+    // fires on start/stop, so without this the bar and metrics freeze mid-run.
+    try {
+        const st = await fetch('/api/status');
+        const sdata = await st.json();
+        if (sdata.transfer) {
+            updateProgress(sdata.transfer);
+            transferRunning = !!sdata.transfer.running;
+            if (!startInFlight) {
+                document.getElementById('btn-start').disabled = transferRunning;
             }
-            const eventLog = document.getElementById('event-log');
-            eventLog.innerHTML = '';
-            for (const entry of sdata.events) {
-                const div = document.createElement('div');
-                div.className = 'event-entry';
-                div.textContent = entry;
-                eventLog.appendChild(div);
-            }
-        } catch (e) { /* status not available yet */ }
-    }
+        }
+        const eventLog = document.getElementById('event-log');
+        eventLog.innerHTML = '';
+        for (const entry of sdata.events) {
+            const div = document.createElement('div');
+            div.className = 'event-entry';
+            div.textContent = entry;
+            eventLog.appendChild(div);
+        }
+    } catch (e) { /* status not available yet */ }
 }, 2000);

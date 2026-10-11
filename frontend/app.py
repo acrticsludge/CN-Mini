@@ -56,6 +56,34 @@ def _read_json(path):
         return None
 
 
+def _write_json_atomic(path, data):
+    """Write JSON atomically so the bridge never reads a half-written file."""
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+# A progress file older than this is a corpse from a dead bridge, not a live
+# transfer — treat it as idle so the dashboard never wedges "busy" forever.
+STALE_PROGRESS_AGE = 600
+
+
+def _bridge_busy():
+    """True when the bridge still has work: a pending request or live progress."""
+    if os.path.exists(REQUEST_FILE):
+        return True
+    progress = _read_json(PROGRESS_FILE)
+    if progress and progress.get('running'):
+        try:
+            age = time.time() - os.path.getmtime(PROGRESS_FILE)
+        except OSError:
+            age = 0
+        if age < STALE_PROGRESS_AGE:
+            return True
+    return False
+
+
 def _sync_transfer_state():
     """Fold the bridge's progress/result/events into dashboard state.
 
@@ -162,17 +190,24 @@ def start_transfer():
     if not os.path.isfile(src):
         return jsonify({'error': f'File not found in shared_files/: {filename}'}), 404
 
+    _sync_transfer_state()
+    # The bridge is single-threaded: a second request while one is pending or
+    # running does not queue — it overwrites REQUEST_FILE and deletes the live
+    # run's progress/result mid-flight. Reject it instead so a rapid double
+    # click can never silently eat the first transfer.
+    if _bridge_busy():
+        return jsonify({'error': 'Transfer already running — wait for it or Stop it',
+                        'filename': transfer_state.get('filename')}), 409
+
     # Clear stale bridge bookkeeping so this run's progress is unambiguous.
     for p in (RESULT_FILE, PROGRESS_FILE, EVENTS_FILE, CANCEL_FILE):
         if os.path.exists(p):
             os.unlink(p)
-    with open(REQUEST_FILE, 'w') as f:
-        json.dump({'filename': filename}, f)
+    _write_json_atomic(REQUEST_FILE, {'filename': filename})
 
-    # Start this transfer with a clean event log. Without this, events from an
-    # earlier run stay in the list and interleave out of order with the new
-    # transfer's, which reads as though they belong together.
-    event_log.clear()
+    # New run, new event file on the bridge side: reset the ingest cursor so
+    # the fresh events are picked up from index 0. The dashboard's own history
+    # is kept — wiping it on every click hid what just happened.
     global _events_ingested
     _events_ingested = 0
 
@@ -291,6 +326,7 @@ def get_status():
 @app.route('/api/metrics')
 def get_metrics():
     """Get performance metrics."""
+    _sync_transfer_state()
     return jsonify({
         'throughput': transfer_state.get('throughput', 0),
         'recovery_time': transfer_state.get('recovery_time'),

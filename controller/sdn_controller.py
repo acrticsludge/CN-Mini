@@ -28,6 +28,10 @@ class SDNController(app_manager.RyuApp):
         self.topology = nx.Graph()
         self.datapaths = {}
         self.mac_to_port = {}
+        # (dpid, src_mac, dst_mac) tuples this controller installed, so a
+        # recompute can delete the stale ones first. Without this, a reroute
+        # leaves the old flow (same match, dead out_port) next to the new one.
+        self.installed_flows = set()
         self.monitor_thread = hub.spawn(self._monitor)
 
     # ---- Switch Features ----
@@ -67,13 +71,25 @@ class SDNController(app_manager.RyuApp):
                 self.logger.info("Link UP detected on switch %d port %s",
                                  datapath.id, msg.desc.port_no)
 
-        self._update_topology()
-        self._recompute_paths()
+        # A handler exception in Ryu is only logged; the recompute is then
+        # silently skipped and the network keeps forwarding into the dead port.
+        # Log loudly instead so a failed reroute is visible, not silent.
+        try:
+            self._update_topology()
+            self._recompute_paths()
+        except Exception as e:
+            self.logger.error("Reroute failed after port event: %s", e)
 
     # ---- Topology Management ----
 
     def _update_topology(self):
-        """Rebuild the topology graph from LLDP discoveries."""
+        """Rebuild the topology graph from LLDP discoveries.
+
+        The graph is cleared first: get_link() only reports live links, so
+        without a rebuild the edge for a dead link stays forever and every
+        "recompute" keeps routing through the failure it was meant to avoid.
+        """
+        self.topology.clear()
         switch_list = get_switch(self)
         for sw in switch_list:
             if sw.dp.id not in self.datapaths:
@@ -92,7 +108,13 @@ class SDNController(app_manager.RyuApp):
                                    weight=1)
 
     def _recompute_paths(self):
-        """Recompute shortest paths and install flows on all switches."""
+        """Recompute shortest paths and install flows on all switches.
+
+        Stale path flows are deleted first so a reroute replaces the old
+        out_port instead of leaving a duplicate entry pointing at the dead
+        link. One bad host pair must not abort the rest: each pair is guarded.
+        """
+        self._remove_installed_flows()
         host_list = get_host(self)
         host_macs = [h.mac for h in host_list]
 
@@ -110,14 +132,28 @@ class SDNController(app_manager.RyuApp):
                     self._install_path_flows(path, src_mac, dst_mac)
                 except (nx.NetworkXNoPath, nx.NodeNotFound):
                     self.logger.debug("No path for %s -> %s", src_mac, dst_mac)
+                except Exception as e:
+                    self.logger.error("Path install failed for %s -> %s: %s",
+                                      src_mac, dst_mac, e)
 
     def _mac_to_dpid(self, mac):
-        """Find which switch port a MAC address is connected to."""
+        """Find which switch a MAC address is connected to.
+
+        Ryu's Host.port is a single Port object, not a list — iterating it
+        raised "TypeError: 'Port' object is not iterable" on every port event
+        and killed the reroute. Accept both shapes defensively.
+        """
         host_list = get_host(self)
         for h in host_list:
             if h.mac == mac:
-                for port in h.port:
-                    return port.dpid
+                port = getattr(h, 'port', None)
+                if port is None:
+                    continue
+                if isinstance(port, (list, tuple)):
+                    if not port:
+                        continue
+                    return getattr(port[0], 'dpid', None)
+                return getattr(port, 'dpid', None)
         return None
 
     def _install_path_flows(self, path, src_mac, dst_mac):
@@ -130,16 +166,43 @@ class SDNController(app_manager.RyuApp):
                 continue
 
             datapath = self.datapaths[src_dpid]
-            ofproto = datapath.ofproto
-            parser = datapath.ofproto_parser
 
             # Get output port for the next hop
             if self.topology.has_edge(src_dpid, dst_dpid):
                 out_port = self.topology[src_dpid][dst_dpid]['src_port']
 
-                match = parser.OFPMatch(eth_src=src_mac, eth_dst=dst_mac)
-                actions = [parser.OFPActionOutput(out_port)]
+                match = datapath.ofproto_parser.OFPMatch(eth_src=src_mac, eth_dst=dst_mac)
+                actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
                 self._add_flow(datapath, 1, match, actions)
+                self.installed_flows.add((src_dpid, src_mac, dst_mac))
+
+    def _remove_installed_flows(self):
+        """Delete every path flow this controller installed.
+
+        Called at the start of a recompute so the new paths replace the old
+        ones instead of shadowing them. A missing datapath (switch gone) is
+        skipped; its entry is still dropped from the set.
+        """
+        for src_dpid, src_mac, dst_mac in list(self.installed_flows):
+            datapath = self.datapaths.get(src_dpid)
+            self.installed_flows.discard((src_dpid, src_mac, dst_mac))
+            if datapath is None:
+                continue
+            try:
+                ofproto = datapath.ofproto
+                parser = datapath.ofproto_parser
+                match = parser.OFPMatch(eth_src=src_mac, eth_dst=dst_mac)
+                mod = parser.OFPFlowMod(
+                    datapath=datapath,
+                    command=ofproto.OFPFC_DELETE,
+                    out_port=ofproto.OFPP_ANY,
+                    out_group=ofproto.OFPG_ANY,
+                    match=match,
+                )
+                datapath.send_msg(mod)
+            except Exception as e:
+                self.logger.error("Flow delete failed on switch %s: %s",
+                                  src_dpid, e)
 
     def _add_flow(self, datapath, priority, match, actions, buffer_id=None):
         """Install a flow rule on a switch."""
