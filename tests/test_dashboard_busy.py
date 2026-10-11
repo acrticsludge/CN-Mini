@@ -124,3 +124,18 @@ def test_legacy_files_without_request_id_still_match(dash):
         json.dump({'filename': 'a.bin', 'status': 'done'}, f)
     state = client.get('/api/status').get_json()['transfer']
     assert state['result']['status'] == 'done'
+
+
+def test_browse_hides_internal_bookkeeping_files(dash):
+    """bridge.lock / heartbeats / link files live in shared_files/ via the bind
+    mount but are not transferable files — the picker must not offer them."""
+    import pathlib
+    shared = pathlib.Path(dash.SHARED_DIR)
+    (shared / 'bridge.lock').write_text('1234')
+    (shared / 'bridge_alive.json').write_text('{}')
+    (shared / 'link_request.json').write_text('{}')
+    (shared / 'link_result.json').write_text('{}')
+    names = {f['name'] for f in dash.app.test_client().get('/api/browse').get_json()['files']}
+    assert 'a.bin' in names
+    assert not (names & {'bridge.lock', 'bridge_alive.json',
+                         'link_request.json', 'link_result.json'})

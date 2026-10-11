@@ -220,11 +220,17 @@ def list_files():
 def browse_files():
     """List files in shared_files/ for the dashboard file picker."""
     os.makedirs(SHARED_DIR, exist_ok=True)
+    # /tmp/shared inside Mininet is bind-mounted to this directory, so the
+    # bridge's and link-watcher's bookkeeping files show up here too. They are
+    # not transferable files — hide them from the picker.
+    internal = {'bridge.lock', 'bridge_alive.json',
+                'link_request.json', 'link_result.json'}
     files = [
         {'name': f, 'size': os.path.getsize(os.path.join(SHARED_DIR, f))}
         for f in sorted(os.listdir(SHARED_DIR))
         if os.path.isfile(os.path.join(SHARED_DIR, f))
         and not f.startswith('transfer_')
+        and f not in internal
     ]
     return jsonify({'directory': 'shared_files', 'files': files})
 

@@ -99,6 +99,14 @@ def _run_topology():
         except Exception:
             pass
     time.sleep(0.5)
+    # The pkill above just killed the lock's owner (if any), so the lockfile is
+    # now definitively orphaned. Remove it BEFORE launching: otherwise the new
+    # bridge sees a lock touched ~1s ago, assumes a live rival, exits — and no
+    # bridge runs at all.
+    try:
+        os.unlink(os.path.join(shared_dir, 'bridge.lock'))
+    except OSError:
+        pass
 
     # popen() — not cmd('... &') — is what puts a long-running process into the
     # node's own network namespace. With cmd(), the bridge ended up in the host
