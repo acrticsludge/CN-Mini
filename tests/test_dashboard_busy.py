@@ -139,3 +139,17 @@ def test_browse_hides_internal_bookkeeping_files(dash):
     assert 'a.bin' in names
     assert not (names & {'bridge.lock', 'bridge_alive.json',
                          'link_request.json', 'link_result.json'})
+
+
+def test_progress_percent_follows_chunks(dash):
+    """The bar reads state.progress: it must track chunk/total mid-run, not sit
+    at 0 until done (the 1 GB symptom: chunks flowing, bar at 0.0%)."""
+    client = dash.app.test_client()
+    assert client.post('/api/start-transfer', json={'filename': 'a.bin'}).status_code == 200
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'running': True, 'chunk': 59772,
+                   'total': 131072, 'throughput': 13070.7}, f)
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['progress'] == round(59772 / 131072 * 100, 1)
+    assert state['chunks_sent'] == 59772
+    assert state['total_chunks'] == 131072

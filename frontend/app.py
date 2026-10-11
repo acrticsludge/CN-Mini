@@ -157,6 +157,12 @@ def _sync_transfer_state():
         transfer_state['chunks_sent'] = progress.get('chunk', 0)
         transfer_state['total_chunks'] = progress.get('total', 0)
         transfer_state['throughput'] = progress.get('throughput', 0.0)
+        # The bar/text read state.progress, which used to be 0 for the whole
+        # run and 100 at the end — so a 1 GB transfer sat at 0.0% for minutes
+        # while chunks visibly flowed underneath it.
+        total = progress.get('total', 0) or 0
+        if total:
+            transfer_state['progress'] = round(progress.get('chunk', 0) / total * 100, 1)
         if not progress.get('running') and not progress.get('cancelled'):
             transfer_state['progress'] = 100
 

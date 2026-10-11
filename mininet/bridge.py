@@ -44,6 +44,9 @@ SERVERS = os.environ.get('BACKUP_SERVERS', '10.0.0.3:9000,10.0.0.4:9000').split(
 POLL_INTERVAL = float(os.environ.get('BRIDGE_POLL_INTERVAL', '0.5'))
 CLIENT_TIMEOUT = float(os.environ.get('BRIDGE_TIMEOUT', '300'))
 
+# Set once in main(); lets run_client heartbeat without plumbing args through.
+_started_at = None
+
 
 def _write_json(path, data):
     """Write JSON atomically so a reader never sees a half-written file."""
@@ -87,12 +90,17 @@ def claim_bridge_lock(max_age=10):
     return True
 
 
-def write_heartbeat(started_at):
-    """Publish liveness for the dashboard's bridge indicator."""
+def write_heartbeat(started_at=None):
+    """Publish liveness for the dashboard's bridge indicator.
+
+    Must also tick DURING a transfer: run_client blocks the main loop for the
+    whole run, so without heartbeats from inside it the dashboard declares the
+    bridge dead (>10s stale) in the middle of a long transfer.
+    """
     try:
         _write_json(ALIVE_FILE, {
             'pid': os.getpid(),
-            'started_at': started_at,
+            'started_at': started_at or _started_at or '?',
             'last_poll': time.strftime('%H:%M:%S'),
             'watching': REQUEST_FILE,
             'servers': SERVERS,
@@ -164,6 +172,7 @@ def run_client(filename, filepath, request_id=None):
     completed = False
     last_error = None
     last_progress = {}
+    last_hb = 0
     deadline = time.time() + CLIENT_TIMEOUT
 
     try:
@@ -207,6 +216,12 @@ def run_client(filename, filepath, request_id=None):
                 emit_event(f'Client timed out after {CLIENT_TIMEOUT:.0f}s')
                 proc.kill()
                 break
+            # Heartbeat from inside the run (throttled: a 1 GB file emits
+            # 131072 progress lines; the alive file does not need all of them).
+            now = time.time()
+            if now - last_hb >= 2:
+                write_heartbeat()
+                last_hb = now
     finally:
         try:
             proc.wait(timeout=10)
@@ -306,7 +321,9 @@ def report_namespace():
 
 
 def main():
+    global _started_at
     started_at = time.strftime('%H:%M:%S')
+    _started_at = started_at
     if not claim_bridge_lock():
         print('[BRIDGE] Another bridge is already watching '
               f'{SHARED_DIR} — exiting instead of racing it. '
