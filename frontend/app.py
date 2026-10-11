@@ -24,6 +24,8 @@ RESULT_FILE = os.path.join(SHARED_DIR, 'transfer_result.json')
 PROGRESS_FILE = os.path.join(SHARED_DIR, 'transfer_progress.json')
 EVENTS_FILE = os.path.join(SHARED_DIR, 'transfer_events.json')
 CANCEL_FILE = os.path.join(SHARED_DIR, 'transfer_cancel.json')
+LINK_REQUEST_FILE = os.path.join(SHARED_DIR, 'link_request.json')
+LINK_RESULT_FILE = os.path.join(SHARED_DIR, 'link_result.json')
 
 # Global state
 transfer_state = {
@@ -208,26 +210,72 @@ def stop_transfer():
 
 @app.route('/api/link-down', methods=['POST'])
 def link_down():
-    """Simulate a link failure between two switches."""
-    data = request.get_json()
+    """Ask Mininet to take a real link down (the Ryu controller then reroutes)."""
+    data = request.get_json(force=True, silent=True) or {}
     sw1 = data.get('sw1', 's1')
     sw2 = data.get('sw2', 's2')
-
-    log_event(f'Link failure: {sw1} <-> {sw2}')
-    socketio.emit('link_event', {'sw1': sw1, 'sw2': sw2, 'status': 'down'})
-    return jsonify({'status': 'link_down', 'sw1': sw1, 'sw2': sw2})
+    return _request_link(sw1, sw2, 'down')
 
 
 @app.route('/api/link-up', methods=['POST'])
 def link_up():
-    """Restore a link between two switches."""
-    data = request.get_json()
+    """Ask Mininet to restore a real link."""
+    data = request.get_json(force=True, silent=True) or {}
     sw1 = data.get('sw1', 's1')
     sw2 = data.get('sw2', 's2')
+    return _request_link(sw1, sw2, 'up')
 
-    log_event(f'Link restored: {sw1} <-> {sw2}')
-    socketio.emit('link_event', {'sw1': sw1, 'sw2': sw2, 'status': 'up'})
-    return jsonify({'status': 'link_up', 'sw1': sw1, 'sw2': sw2})
+
+def _request_link(sw1, sw2, state):
+    """Write a link request for topology.py's watcher, and report what it did."""
+    for name in (sw1, sw2):
+        if not name.startswith('s') or not name[1:].isdigit():
+            return jsonify({'error': f'Invalid switch name: {name}'}), 400
+    if sw1 == sw2:
+        return jsonify({'error': 'Pick two different switches'}), 400
+
+    try:
+        os.makedirs(SHARED_DIR, exist_ok=True)
+        request_id = f'{int(time.time() * 1000)}-{os.getpid()}'
+        req = os.path.join(SHARED_DIR, 'link_request.json')
+        with open(req, 'w') as f:
+            json.dump({'sw1': sw1, 'sw2': sw2, 'state': state,
+                       'request_id': request_id,
+                       'requested_at': time.time()}, f)
+    except Exception as e:
+        return jsonify({'error': f'Could not write link request: {e}'}), 500
+
+    # Wait briefly for topology.py to confirm it actually applied the change.
+    # The dashboard must reflect the real network, not our intent. A result only
+    # counts if it echoes this request's id — a leftover file from an earlier
+    # click would otherwise be mistaken for a fresh confirmation.
+    result_file = os.path.join(SHARED_DIR, 'link_result.json')
+    confirmed = None
+    for _ in range(20):
+        res = _read_json(result_file)
+        if res and res.get('request_id') == request_id \
+                and res.get('sw1') == sw1 and res.get('sw2') == sw2 \
+                and res.get('state') == state:
+            confirmed = res
+            break
+        time.sleep(0.25)
+
+    verb = 'Link failure' if state == 'down' else 'Link restored'
+    if confirmed and confirmed.get('applied'):
+        log_event(f'{verb}: {sw1} <-> {sw2} confirmed by Mininet')
+        socketio.emit('link_event', {'sw1': sw1, 'sw2': sw2, 'status': state})
+        return jsonify({'status': state, 'sw1': sw1, 'sw2': sw2, 'applied': True})
+    if confirmed:
+        log_event(f'{verb}: {sw1} <-> {sw2} REJECTED — {confirmed.get("error")}')
+        return jsonify({'status': 'error', 'sw1': sw1, 'sw2': sw2,
+                        'applied': False, 'error': confirmed.get('error')}), 502
+
+    log_event(f'{verb}: {sw1} <-> {sw2} requested but Mininet did not confirm '
+              f'(is mininet/topology.py running?)')
+    return jsonify({'status': 'unconfirmed', 'sw1': sw1, 'sw2': sw2,
+                    'applied': False,
+                    'error': 'Mininet did not confirm within 5s — is '
+                             'mininet/topology.py running?'}), 504
 
 
 @app.route('/api/status')
