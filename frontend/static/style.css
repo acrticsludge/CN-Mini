@@ -254,6 +254,32 @@ main {
     border-bottom: 1px solid #16213e;
 }
 
+/* Standout severities: recovery is the demo's headline number, link events
+   frame it, done/fail close the run. Everything else stays plain. */
+.event-entry.evt-recovery {
+    color: #7bf1c3;
+    font-weight: bold;
+    background: rgba(78, 204, 163, 0.12);
+    border-left: 3px solid #4ecca3;
+    padding-left: 0.4rem;
+}
+
+.event-entry.evt-link {
+    color: #f0c75e;
+    border-left: 3px solid #f0a500;
+    padding-left: 0.4rem;
+}
+
+.event-entry.evt-done {
+    color: #4ecca3;
+    font-weight: bold;
+}
+
+.event-entry.evt-fail {
+    color: #e94560;
+    font-weight: bold;
+}
+
 .event-timestamp {
     color: #4ecca3;
 }

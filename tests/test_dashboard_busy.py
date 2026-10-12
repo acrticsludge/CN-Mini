@@ -153,3 +153,64 @@ def test_progress_percent_follows_chunks(dash):
     assert state['progress'] == round(59772 / 131072 * 100, 1)
     assert state['chunks_sent'] == 59772
     assert state['total_chunks'] == 131072
+
+
+def test_recovery_measured_on_advance_after_link_down(dash):
+    """Chunks moving again after a confirmed link-down stamps recovery_time and
+    logs the [RECOVERY] line once — the teacher's number."""
+    import time
+    client = dash.app.test_client()
+    assert client.post('/api/start-transfer', json={'filename': 'a.bin'}).status_code == 200
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'running': True, 'chunk': 5,
+                   'total': 10, 'throughput': 1.0}, f)
+    client.get('/api/status')
+    # Simulate the confirmed link-down (sets the clock _request_link sets).
+    dash.transfer_state['link_down_at'] = time.time()
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'running': True, 'chunk': 6,
+                   'total': 10, 'throughput': 1.0}, f)
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['recovery_time'] is not None
+    assert state['recovery_time'] >= 0
+    assert any('[RECOVERY]' in e for e in dash.event_log)
+    # A further advance must not re-measure or double-log.
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'running': True, 'chunk': 7,
+                   'total': 10, 'throughput': 1.0}, f)
+    client.get('/api/status')
+    assert sum('[RECOVERY]' in e for e in dash.event_log) == 1
+
+
+def test_done_logs_duration_summary(dash):
+    """First sight of done logs one [DONE] line with chunks, seconds, speed."""
+    client = dash.app.test_client()
+    first = client.post('/api/start-transfer', json={'filename': 'a.bin'})
+    my_id = first.get_json()['request_id']
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': my_id, 'running': True,
+                   'chunk': 10, 'total': 10, 'throughput': 42.0}, f)
+    client.get('/api/status')
+    with open(dash.RESULT_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': my_id, 'status': 'done'}, f)
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['duration'] is not None
+    done = [e for e in dash.event_log if '[DONE]' in e]
+    assert len(done) == 1
+    assert '10/10 chunks' in done[0]
+    # Second sight must not log again.
+    client.get('/api/status')
+    assert sum('[DONE]' in e for e in dash.event_log) == 1
+
+
+def test_failed_logs_duration_summary(dash):
+    client = dash.app.test_client()
+    first = client.post('/api/start-transfer', json={'filename': 'a.bin'})
+    my_id = first.get_json()['request_id']
+    with open(dash.RESULT_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': my_id, 'status': 'failed',
+                   'error': '[CLIENT] boom'}, f)
+    client.get('/api/status')
+    fail = [e for e in dash.event_log if '[FAIL]' in e]
+    assert len(fail) == 1
+    assert 'boom' in fail[0]

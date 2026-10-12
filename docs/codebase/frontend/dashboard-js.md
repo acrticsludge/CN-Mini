@@ -34,7 +34,10 @@ rather than vendored.
 - `pollOnce()` (every 2 s + once on load + after Start): recovery metric,
   transfer-result notice keyed on **`request_id` + status** (filename fallback)
   with `loadFiles()` on done, then status → progress/running/button/events/
-  bridge-indicator updates.
+  bridge-indicator updates. Event entries are classified by marker
+  (`[RECOVERY]`/`[LINK]`/`[DONE]`/`[FAIL]`, plus local keywords) into
+  `evt-recovery/evt-link/evt-done/evt-fail` CSS classes — green headline,
+  amber link, green/red closers; everything else stays plain.
 
 ## Contract with `dashboard.html` (element IDs)
 

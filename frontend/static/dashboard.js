@@ -129,10 +129,24 @@ document.getElementById('btn-link-up').addEventListener('click', async () => {
 document.getElementById('btn-refresh-files').addEventListener('click', loadFiles);
 
 // Functions
+function eventClass(text) {
+    // Severity markers: backend lines carry [RECOVERY]/[LINK]/[DONE]/[FAIL];
+    // local notices are matched by keyword. Unknown lines stay unstyled.
+    if (text.includes('[RECOVERY]')) return 'evt-recovery';
+    if (text.includes('[FAIL]') || text.includes('Transfer failed')
+        || text.includes('Transfer rejected')) return 'evt-fail';
+    if (text.includes('[DONE]') || text.includes('Transfer complete')) return 'evt-done';
+    if (text.includes('[LINK]') || text.includes('Link failure')
+        || text.includes('Link restored')) return 'evt-link';
+    return '';
+}
+
 function addEvent(message) {
     const log = document.getElementById('event-log');
     const entry = document.createElement('div');
     entry.className = 'event-entry';
+    const cls = eventClass(message);
+    if (cls) entry.className += ' ' + cls;
     const timestamp = new Date().toLocaleTimeString();
     entry.innerHTML = `<span class="event-timestamp">[${timestamp}]</span> ${message}`;
     log.appendChild(entry);
@@ -312,6 +326,8 @@ async function pollOnce() {
         for (const entry of sdata.events) {
             const div = document.createElement('div');
             div.className = 'event-entry';
+            const cls = eventClass(entry);
+            if (cls) div.className += ' ' + cls;
             div.textContent = entry;
             eventLog.appendChild(div);
         }

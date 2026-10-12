@@ -39,6 +39,8 @@ transfer_state = {
     'throughput': 0.0,
     'start_time': None,
     'recovery_time': None,
+    'duration': None,
+    'link_down_at': None,
     'result': None,
     'completed_at': None,
 }
@@ -153,6 +155,7 @@ def _sync_transfer_state():
     """
     progress = _read_json(PROGRESS_FILE)
     if _matches_current(progress):
+        prev_chunks = transfer_state.get('chunks_sent', 0)
         transfer_state['running'] = bool(progress.get('running'))
         transfer_state['chunks_sent'] = progress.get('chunk', 0)
         transfer_state['total_chunks'] = progress.get('total', 0)
@@ -163,6 +166,20 @@ def _sync_transfer_state():
         total = progress.get('total', 0) or 0
         if total:
             transfer_state['progress'] = round(progress.get('chunk', 0) / total * 100, 1)
+        # Recovery clock: chunks moving again after a confirmed link-down
+        # means traffic is flowing on the new path. The gap between the two
+        # is the reroute time the demo needs — measured where traffic is
+        # observable, since Flask cannot see inside the controller.
+        if (progress.get('chunk', 0) > prev_chunks
+                and transfer_state.get('link_down_at') is not None
+                and transfer_state.get('recovery_time') is None):
+            dt = time.time() - transfer_state['link_down_at']
+            transfer_state['recovery_time'] = round(dt, 1)
+            transfer_state['link_down_at'] = None
+            log_event(f"[RECOVERY] Traffic flowing again "
+                      f"{dt:.1f}s after link down "
+                      f"({transfer_state['filename']}: "
+                      f"chunk {progress.get('chunk', 0)}/{total})")
         if not progress.get('running') and not progress.get('cancelled'):
             transfer_state['progress'] = 100
 
@@ -172,6 +189,21 @@ def _sync_transfer_state():
         # long the completed state has been held, rather than looking stuck.
         if transfer_state.get('result') != result:
             transfer_state['completed_at'] = time.strftime('%H:%M:%S')
+            started = transfer_state.get('start_time')
+            if started:
+                transfer_state['duration'] = round(time.time() - started, 1)
+            if result.get('status') == 'done':
+                log_event(
+                    f"[DONE] Transfer done: {result.get('filename')} — "
+                    f"{transfer_state.get('chunks_sent', 0)}/"
+                    f"{transfer_state.get('total_chunks', 0)} chunks in "
+                    f"{transfer_state.get('duration', '?')}s at "
+                    f"{transfer_state.get('throughput', 0)} KB/s")
+            elif result.get('status') == 'failed':
+                log_event(
+                    f"[FAIL] Transfer failed: {result.get('filename')} — "
+                    f"{result.get('error', 'unknown error')} "
+                    f"(after {transfer_state.get('duration', '?')}s)")
         transfer_state['result'] = result
         transfer_state['running'] = False
         if result.get('status') == 'done':
@@ -295,6 +327,9 @@ def start_transfer():
     transfer_state['throughput'] = 0.0
     transfer_state['start_time'] = time.time()
     transfer_state['result'] = None
+    transfer_state['duration'] = None
+    transfer_state['recovery_time'] = None
+    transfer_state['link_down_at'] = None
     # The previous transfer's result is intentionally kept out of the new run's
     # state, but its metrics stay visible in the panel until this one finishes.
     transfer_state['completed_at'] = None
@@ -374,15 +409,21 @@ def _request_link(sw1, sw2, state):
 
     verb = 'Link failure' if state == 'down' else 'Link restored'
     if confirmed and confirmed.get('applied'):
-        log_event(f'{verb}: {sw1} <-> {sw2} confirmed by Mininet')
+        if state == 'down':
+            # Start the recovery clock: when chunks advance again, _sync stamps
+            # recovery_time and logs the [RECOVERY] line. Fresh episode — any
+            # previous measurement belongs to an older failure.
+            transfer_state['link_down_at'] = time.time()
+            transfer_state['recovery_time'] = None
+        log_event(f'[LINK] {verb}: {sw1} <-> {sw2} confirmed by Mininet')
         socketio.emit('link_event', {'sw1': sw1, 'sw2': sw2, 'status': state})
         return jsonify({'status': state, 'sw1': sw1, 'sw2': sw2, 'applied': True})
     if confirmed:
-        log_event(f'{verb}: {sw1} <-> {sw2} REJECTED — {confirmed.get("error")}')
+        log_event(f'[LINK] {verb}: {sw1} <-> {sw2} REJECTED — {confirmed.get("error")}')
         return jsonify({'status': 'error', 'sw1': sw1, 'sw2': sw2,
                         'applied': False, 'error': confirmed.get('error')}), 502
 
-    log_event(f'{verb}: {sw1} <-> {sw2} requested but Mininet did not confirm '
+    log_event(f'[LINK] {verb}: {sw1} <-> {sw2} requested but Mininet did not confirm '
               f'(is mininet/topology.py running?)')
     return jsonify({'status': 'unconfirmed', 'sw1': sw1, 'sw2': sw2,
                     'applied': False,

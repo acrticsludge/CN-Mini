@@ -7,11 +7,17 @@ Flask + Flask-SocketIO (`async_mode='threading'`). Serves the page and every
 ## State & helpers
 
 - `transfer_state` — `running, filename, request_id, progress, chunks_sent,
-  total_chunks, throughput, start_time, recovery_time, result, completed_at`.
+  total_chunks, throughput, start_time, recovery_time, duration, link_down_at,
+  result, completed_at`.
 - `_read_json` (tolerant) / `_write_json_atomic` (tmp + replace — the bridge
   must never read a half-written request).
 - `_new_request_id()` — unique id per click (`ms-pid-counter`), minted under
   the start lock. A result can only ever settle the run that caused it.
+- Measurement (logging only, no control flow): a confirmed link-down stamps
+  `link_down_at`; the next chunk advance stamps `recovery_time` and logs the
+  `[RECOVERY]` line (traffic flowing again after Xs). First sight of a result
+  stamps `duration` and logs `[DONE]` (chunks, seconds, KB/s) or `[FAIL]`
+  (error, seconds). Severities are marker prefixes the UI maps to colors.
 - `_matches_current(doc)` — progress/result belongs to the queued run if
   `request_id` matches; falls back to filename so files from an older bridge
   (no id) are adopted, not orphaned.
