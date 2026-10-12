@@ -13,7 +13,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from common.protocol import CHUNK_SIZE, MSG_ACK, pack_hello, pack_data, unpack_ack
+from common.protocol import (CHUNK_SIZE, MSG_ACK, MSG_HELLO, pack_hello, pack_data,
+                              pack_ack, unpack_ack)
 from common.checksum import compute_crc32
 from common.transport import recv_frame
 
@@ -168,3 +169,107 @@ class TestRecovery:
 
         assert all(results)
         assert len(results) == 3
+
+
+class TestStallRecovery:
+    """Mid-transfer blackhole: ACKs stall, then resume on the healed path.
+
+    This is the demo scenario (link killed mid-transfer): the run must survive
+    a stall longer than the old 10 s socket timeout and finish with zero
+    rework, while a shorter transfer timeout still fails fast. The 12 s stall
+    sits past the old death line on purpose.
+    """
+
+    @staticmethod
+    def _stalling_server(port, stall, received):
+        """Fake server: ready-ACKs, then holds the first DATA ACK for `stall`
+        seconds (the blackhole), then serves the rest normally."""
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        conn, _ = srv.accept()
+        try:
+            conn.settimeout(60)
+            hello = recv_frame(conn)
+            assert hello is not None and hello['type'] == MSG_HELLO
+            conn.sendall(pack_ack(0))
+            data = recv_frame(conn)
+            time.sleep(stall)
+            conn.sendall(pack_ack(data['index']))
+            received.append(data['payload'])
+            while True:
+                nxt = recv_frame(conn)
+                if nxt is None:
+                    break
+                conn.sendall(pack_ack(nxt['index']))
+                received.append(nxt['payload'])
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            srv.close()
+
+    def _run_against_stall(self, stall, **client_kwargs):
+        from client.client import BackupClient
+        content = b'S' * CHUNK_SIZE  # single chunk keeps the test fast
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
+            f.write(content)
+            path = f.name
+        port = free_port()
+        received = []
+        t = threading.Thread(target=self._stalling_server,
+                             args=(port, stall, received), daemon=True)
+        t.start()
+        time.sleep(0.3)
+        try:
+            client = BackupClient([('127.0.0.1', port)], **client_kwargs)
+            start = time.time()
+            ok = client.send_file(path)
+            elapsed = time.time() - start
+            client.close()
+        finally:
+            os.unlink(path)
+            t.join(timeout=30)
+        return ok, elapsed, content, received
+
+    def test_stalled_run_survives_with_default_timeout(self):
+        ok, elapsed, content, received = self._run_against_stall(12)
+        assert ok is True
+        assert elapsed >= 12  # it really waited out the blackhole
+        assert b''.join(received) == content
+
+    def test_stalled_run_fails_fast_with_short_timeout(self):
+        ok, _, _, _ = self._run_against_stall(12, transfer_timeout=2)
+        assert ok is False
+
+    def test_transfer_phase_uses_transfer_timeout(self):
+        """The socket carries the transfer timeout after connecting, not the
+        connect timeout — the mechanism the stall test relies on."""
+        from client.client import BackupClient
+        from server.server import BackupServer
+        port = free_port()
+        storage = os.path.join(tempfile.gettempdir(), f'test_stall_{port}')
+        os.makedirs(storage, exist_ok=True)
+        srv = BackupServer(host='127.0.0.1', port=port, storage_dir=storage)
+        t = threading.Thread(target=srv.start, daemon=True)
+        t.start()
+        time.sleep(0.5)
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
+                f.write(b'Q' * 100)
+                path = f.name
+            try:
+                client = BackupClient([('127.0.0.1', port)], connect_timeout=10,
+                                      transfer_timeout=45)
+                assert client.send_file(path) is True
+                assert client.sock.gettimeout() == 45
+                client.close()
+            finally:
+                os.unlink(path)
+        finally:
+            srv.stop()
+            cleanup_dir(storage)

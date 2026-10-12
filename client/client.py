@@ -22,9 +22,15 @@ from common.transport import recv_all, recv_frame
 class BackupClient:
     """TCP client that sends file chunks to backup servers with integrity and resume support."""
 
-    def __init__(self, servers, chunk_size=CHUNK_SIZE):
+    def __init__(self, servers, chunk_size=CHUNK_SIZE,
+                 connect_timeout=10, transfer_timeout=60):
         self.servers = servers
         self.chunk_size = chunk_size
+        # Two different waits: connecting must fail fast (server truly down),
+        # but a live transfer must out-wait a link-failure blackhole while TCP
+        # retransmits and STP unblocks the alternate path (~tens of seconds).
+        self.connect_timeout = connect_timeout
+        self.transfer_timeout = transfer_timeout
         self.sock = None
         self.connected = False
         self.current_server = None
@@ -35,7 +41,7 @@ class BackupClient:
         for host, port in self.servers:
             try:
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(10)
+                self.sock.settimeout(self.connect_timeout)
                 self.sock.connect((host, port))
                 self.connected = True
                 self.current_server = (host, port)
@@ -60,6 +66,11 @@ class BackupClient:
         if not self.connected:
             if not self.connect():
                 return False
+
+        # Widen the timeout for the transfer phase. A mid-transfer link failure
+        # stalls ACKs until the controller reroutes and STP reconverges; killing
+        # the run at 10 s would waste everything the reroute was meant to save.
+        self.sock.settimeout(self.transfer_timeout)
 
         start_chunk = resume_from if resume_from > 0 else 0
 
@@ -171,6 +182,11 @@ if __name__ == '__main__':
     parser.add_argument('file', help='File to send')
     parser.add_argument('--servers', nargs='+', default=['10.0.0.3:9000', '10.0.0.4:9000'])
     parser.add_argument('--resume', type=int, default=0, help='Resume from chunk index')
+    parser.add_argument('--connect-timeout', type=float, default=10,
+                        help='Seconds to wait per server when connecting')
+    parser.add_argument('--transfer-timeout', type=float, default=60,
+                        help='Seconds to wait for an ACK mid-transfer (must cover '
+                             'STP reconvergence so a link failure stalls, not kills)')
     args = parser.parse_args()
 
     servers = []
@@ -178,7 +194,8 @@ if __name__ == '__main__':
         host, port = s.split(':')
         servers.append((host, int(port)))
 
-    client = BackupClient(servers)
+    client = BackupClient(servers, connect_timeout=args.connect_timeout,
+                          transfer_timeout=args.transfer_timeout)
     try:
         ok = client.send_file(args.file, resume_from=args.resume)
     finally:

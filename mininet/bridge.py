@@ -43,6 +43,9 @@ ALIVE_FILE = os.path.join(SHARED_DIR, 'bridge_alive.json')
 SERVERS = os.environ.get('BACKUP_SERVERS', '10.0.0.3:9000,10.0.0.4:9000').split(',')
 POLL_INTERVAL = float(os.environ.get('BRIDGE_POLL_INTERVAL', '0.5'))
 CLIENT_TIMEOUT = float(os.environ.get('BRIDGE_TIMEOUT', '300'))
+# Per-ACK wait handed to the client: must cover STP reconvergence after a link
+# failure, or every mid-transfer failure becomes a failed run instead of a stall.
+TRANSFER_TIMEOUT = os.environ.get('BRIDGE_TRANSFER_TIMEOUT', '60')
 
 # Set once in main(); lets run_client heartbeat without plumbing args through.
 _started_at = None
@@ -163,7 +166,8 @@ def _write_terminal_progress(filename, request_id, running=False, cancelled=Fals
 
 def run_client(filename, filepath, request_id=None):
     """Run the client, streaming progress. Returns (status, error)."""
-    cmd = [sys.executable, CLIENT_SCRIPT, filepath, '--servers'] + SERVERS
+    cmd = ([sys.executable, CLIENT_SCRIPT, filepath, '--servers'] + SERVERS
+           + ['--transfer-timeout', TRANSFER_TIMEOUT])
     print(f"[BRIDGE] Running: {' '.join(cmd)}", flush=True)
     emit_event(f'Client started on h1 for {filename}')
 

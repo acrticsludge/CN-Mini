@@ -1,6 +1,10 @@
 # D1 Demo Script — Distributed Backup System (3 speakers, in order)
 
-Timing: ~10 minutes + questions. Two rules for all three of you:
+Timing: ~10–12 minutes + questions. The 1.1 GB demo file runs for minutes, so
+it transfers *behind* the closing slides instead of blocking them — the
+choreography below says exactly when to start it, when to kill the link, and
+what to do if the run fails on the blackhole (planned fallback, not panic).
+Two rules for all three of you:
 1. Say **"reported"** where the slides say reported, **"to be verified"** where
    they say pending/unverified. Never upgrade a maybe into a done.
 2. Every short form is expanded the first time you say it — if you forget the
@@ -11,6 +15,16 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 - **Arush** — slides 1–5 (open, architecture, problems, TCP sockets, socket-flow picture)
 - **Aryan** — slides 6–10 (protocol, topology picture, Mininet+SDN, reroute, integration)
 - **Anubhav** — slides 11–15 (scenario, live demo, performance, tests, close)
+
+## Rehearsal checklist (do once before demo day)
+
+1. Create the file and record its exact size: `ls -l test_1gb.bin` — chunk
+   count is file bytes ÷ 8192, roughly 144,000 for 1.1 GB. Read the real total
+   off the dashboard ("Chunks: X / Y") and use *that* number on stage.
+2. Time one clean transfer with no failure — that is your budget anchor
+   (expect a couple of minutes at ~13 MB/s).
+3. Time one kill-mid-transfer run — confirm the *same* run survives the
+   blackhole and lands (no restart), so the fallback below stays unused.
 
 ---
 
@@ -77,13 +91,15 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > Every frame — every single message — is a 21-byte header plus up to 8 KB of
 > file data: a magic number `DEADBEEF` so garbage gets rejected, then type,
 > index, total count, CRC code, and length. Four message types: DATA, ACK,
-> RESUME, HELLO. The math that matters: a 1-megabyte file is exactly 128
-> chunks of 8 KB. The server recomputes the CRC, writes the chunk, and ACKs —
-> every chunk, no exceptions. Two honest limits, both on the slide: CRC catches
-> accidents, not attackers — no TLS — Transport Layer Security, meaning
-> encryption — and no login security yet. And resume survives restarts because
-> the server's folder is bind-mounted — that means shared — into our repo, so
-> half-written files are still there after a reboot.
+> RESUME, HELLO. The math on screen uses a 1 MB example — exactly 128 chunks
+> of 8 KB. Our live demo scales the identical loop to a 1.1 GB file: roughly a
+> hundred and forty-four thousand chunks — same frames, just more of them.
+> The server recomputes the CRC, writes the chunk, and ACKs — every chunk, no
+> exceptions. Two honest limits, both on the slide: CRC catches accidents, not
+> attackers — no TLS — Transport Layer Security, meaning encryption — and no
+> login security yet. And resume survives restarts because the server's folder
+> is bind-mounted — that means shared — into our repo, so half-written files
+> are still there after a reboot.
 
 ## ARYAN — Slide 7: Topology picture
 
@@ -132,71 +148,92 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > arrives. And here is the exam answer, word for word: **the controller never
 > sees a single file chunk — there is no direct wire between controller and
 > app; they interact only through the network itself.** Recovery comes in three
-> independent layers: Ryu reroutes around dead links, TCP — Transmission
-> Control Protocol — retransmits lost bytes, and the app resumes or fails over
-> to the other server. Any one layer can save a transfer the others lost. Over
-> to Anubhav for the failure demo and the results.
+> independent layers, and here is how they divide the job tonight: Ryu reroutes
+> around the dead link, TCP — Transmission Control Protocol — retransmits
+> through the blackhole, and crucially the client *waits out* the stall — a
+> full minute of patience for ACKs instead of the usual ten seconds — so the
+> *same run* continues on the healed path with zero rework. Over to Anubhav —
+> who starts our 1.1 GB transfer live, right now, so it runs behind the rest
+> of the talk.
 
-## ANUBHAV — Slide 11: Challenging Scenario
+## ANUBHAV — Slide 11: Challenging Scenario (+ transfer starts here)
 
-> Our challenge test: a 1 MB file, 128 chunks, sent from h1 to h3 over s1–s2 —
-> then we kill s1–s2 in the middle of the transfer, either from the dashboard
+> Our challenge test: a 1.1 GB file — roughly a hundred and forty-four
+> thousand 8 KB chunks, exact total on the dashboard — sent from h1 to h3 over
+> s1–s2. I have just pressed Start Transfer, so watch the bar and the chunk
+> count climb while I talk. Partway through, we kill s1–s2, from the dashboard
 > button or the Mininet command line. The chain fires: port alert, recompute,
-> new flows. Reported outcome: traffic flowing again in 1.3 seconds, all 128
-> chunks received. And now the careful part — these are **four separate
-> claims**: network connectivity back in 1.3 s is *reported*; TCP keeping the
-> connection alive is *unverified* — our notes credit TCP retransmission and we
-> still have to confirm it in the client log; the app-level RESUME being used
-> is *unverified* for the same reason; file integrity at 128 out of 128 is
-> reported, and I re-check it live with `sha256sum` — a fingerprint command
-> that proves two files are byte-identical — in the demo, which starts now.
+> new flows — and this run does *not* restart; it stalls, TCP retransmits, and
+> continues where it stopped. The 1.3-second recovery on screen comes from our
+> small-file runs; at this scale, watch the bar, not the stopwatch — the
+> reroute takes the same time regardless of file size. And the careful part —
+> four **separate** claims: connectivity restored is *reported*; TCP keeping
+> the connection alive is *unverified* on the old 10-second timeout, and
+> *exactly what this demo tests* on the new 60-second one; the app-level RESUME
+> path is untouched tonight — survival comes from patience, not resume; file
+> integrity is reported, and I re-check it with `sha256sum` — a fingerprint
+> command proving two files are byte-identical — when the run lands.
 
 ## ANUBHAV — Slide 12: LIVE DEMO (Anubhav drives, Aryan narrates the network)
 
+> The transfer is already running behind us. Three beats from here:
 1. `mininet> pingall` — all reachable. (Aryan: "Baseline is green.")
-2. Dashboard: pick the 1 MB file, **Start Transfer** — point at the progress bar.
-3. Mid-transfer: **Trigger Link Failure** — (Aryan, watching the controller
-   terminal: "Port-down alert arrived — recomputing — new flows installed.")
-4. Transfer completes 128/128 → `sha256sum` the original and the stored copy:
-   identical fingerprints.
-5. `sh ovs-ofctl -O OpenFlow13 dump-flows s1` — print the new path, on screen.
+2. **Trigger Link Failure**, about a third of the way into the bar — (Aryan,
+   watching the controller terminal: "Port-down alert arrived — recomputing —
+   new flows installed.") Then `sh ovs-ofctl -O OpenFlow13 dump-flows s1` —
+   the new path, on screen — and `pingall` again once it settles: clean on the
+   surviving mesh. The bar will look stuck during the blackhole — say so:
+   "no ACKs moving, client waiting out its 60-second window."
+3. When the bar lands: transfer completes, every chunk received →
+   `sha256sum` the original and the stored copy: identical fingerprints.
 >
-> If anything stalls: say what you see ("holding at N chunks while the
-> controller recomputes") — narrating a hiccup scores more than hiding it.
+> Planned fallback, only if the run fails on a longer-than-expected blackhole:
+> say it plainly — "the stall outran even the 60-second window, so this run is
+> lost — but the network layer won, `pingall` is clean on the new path" — then
+> re-click Start on the healed network and let it run behind the closing
+> slides; the hash check becomes your ending instead of your middle. If
+> anything else stalls: narrate what you see ("holding at N chunks while the
+> controller recomputes") — a narrated hiccup scores more than a hidden one.
 
 ## ANUBHAV — Slide 13: Performance and Baseline
 
-> The 1.3 seconds split into three stages: 0.3 to *notice* the dead link, 0.2
-> to *recompute* paths, 0.8 until traffic actually flows — the physical
-> network settling down is the slow part, not our code. Against the static,
-> non-smart baseline: same speed when healthy, 842 versus 850 kilobytes per
-> second — but after a failure, our dynamic setup recovers in 1.3 s while the
-> static one fails completely with every chunk lost. Stated honestly: the
-> static result is pass-or-fail, so a fair speed comparison is impossible, and
-> bigger files and loss percentages are still to be measured.
+> The recovery clock splits into three stages: 0.3 to *notice* the dead link,
+> 0.2 to *recompute* paths, 0.8 until traffic actually flows — the physical
+> network settling down is the slow part, not our code, and it costs the same
+> whether the file is 1 MB or 1.1 GB. Against the static, non-smart baseline:
+> same speed when healthy, 842 versus 850 kilobytes per second — those
+> baselines are from the small-file runs; our big run's live numbers are on
+> the dashboard behind me. After a failure, dynamic recovers while static
+> fails outright with every chunk lost. Stated honestly: the static result is
+> pass-or-fail, so a fair speed comparison is impossible, and loss percentages
+> are still to be measured.
 
 ## ANUBHAV — Slide 14: Testing and Results
 
-> Walk the table row by row, and read the status column *exactly as written* —
-> most unit-test rows say *pending runs*, the Mininet rows say *not documented
-> yet*, and only the live reroute row says *reported, to re-verify*. That
-> column is our work plan for phase 2, not a weakness: every test case already
-> defines its starting condition and its expected result before we run it.
+> Walk the table row by row, and read the status column *exactly as written*.
+> Our stall tests are the newest row in spirit: a 12-second ACK blackhole —
+> past the old 10-second death line — survived by the same run, failed fast on
+> a short timeout. That column is our work plan for phase 2, not a weakness:
+> every test case already defines its starting condition and its expected
+> result before we run it. (If the big transfer is still flowing, gesture at
+> it — "still climbing, zero failed chunks" — it is the best background visual
+> on stage.)
 
 ## ANUBHAV — Slide 15: Conclusion + close
 
 > What we demonstrated: TCP sockets with a custom message protocol, CRC codes
 > with per-chunk ACKs and resume, Mininet plus OpenFlow 1.3 plus the Ryu
-> controller, and Dijkstra rerouting on link failure — strongest result, 1.3
-> seconds recovery with 128 of 128 chunks, reported. Limitations, plainly:
-> app and controller are not directly connected, controller tests are at the
-> map level only, small file with few runs, CRC only with no security, static
-> baseline speed unmeasured, and failover to one server rather than true
-> copying to both. Each limitation maps to a future item: bigger test sweeps,
-> SHA — Secure Hash Algorithm — fingerprinting plus TLS encryption, a REST —
-> web-request — hook so the app can talk to the controller, choosing paths by
-> measured bandwidth, and storing every chunk on both servers. Code is on
-> GitHub — thank you, and we welcome questions.
+> controller, and Dijkstra rerouting on link failure — strongest result, fast
+> recovery with every chunk received, reported. Limitations, plainly: app and
+> controller are not directly connected, controller tests are at the map level
+> only, few runs so far, CRC only with no security, static baseline speed
+> unmeasured, and failover to one server rather than true copying to both.
+> Each limitation maps to a future item: bigger test sweeps, SHA — Secure Hash
+> Algorithm — fingerprinting plus TLS encryption, a REST — web-request — hook
+> so the app can talk to the controller, choosing paths by measured bandwidth,
+> and storing every chunk on both servers. Code is on GitHub — thank you, and
+> we welcome questions. (If the transfer just landed: end on the hash match —
+> nothing closes a demo like two identical fingerprints.)
 
 ---
 
@@ -208,11 +245,12 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 - **TCP ACK versus your ACK?** — Kernel receipt versus CRC-checked-and-stored;
   only ours moves resume forward. (Arush)
 - **Why 8 KB chunks?** — Small enough to resume cheaply, big enough to avoid
-  drowning in per-chunk ACKs; 1 MB ÷ 8 KB = 128 frames. (Aryan)
+  drowning in per-chunk ACKs; 1 MB ÷ 8 KB = 128 frames, and the demo file is
+  the same frames × ~144,000. (Aryan)
 - **CRC — Cyclic Redundancy Check — versus SHA?** — CRC is fast for per-chunk
   checks; it detects corruption, not attackers (a listed limitation). (Aryan)
 - **Server h3 dies mid-transfer?** — The client tries servers in order, so h4
-  takes over (failover). (Aryan — or Anubhav, whoever gets asked)
+  takes over (failover). (Aryan)
 - **How do app and controller interact?** — They don't, directly — only
   through the network itself (slide 10). (Aryan)
 - **The controller program itself dies?** — Switches keep their last
@@ -221,3 +259,10 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
   comparison — stated on slide 13. (Anubhav)
 - **Prove the reroute path?** — Controller log plus `dump-flows`, live in
   the demo. (Anubhav)
+- **Why did the big transfer take minutes?** — One ACK round-trip per 8 KB
+  chunk, ~144,000 of them — correct but slow by design; pipelining is future
+  work. (Anubhav)
+- **Why didn't the run die when the link died?** — Split timeouts: 10 s to
+  connect, 60 s to wait for ACKs mid-transfer — the run stalls while TCP
+  retransmits, then continues on the healed path. Tested with a 12 s
+  ACK blackhole. (Anubhav)

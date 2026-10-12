@@ -39,8 +39,10 @@ results back out as JSON files. It is the only link between the dashboard
   the file to exist, clears bookkeeping (**never the request itself** — that
   race ate clicks), writes a running pickup marker *before* the client runs
   (closes the busy-check blind window), runs, echoes `request_id` in the result.
-- `run_client(filename, filepath, request_id)` — spawns the client, parses
-  stdout: `[PROGRESS]` → progress file (+ remembers last values),
+- `run_client(filename, filepath, request_id)` — spawns the client with
+  `--transfer-timeout` from `BRIDGE_TRANSFER_TIMEOUT` (default 60 s — must
+  cover STP reconvergence, see `client.md`), parses stdout:
+  `[PROGRESS]` → progress file (+ remembers last values),
   `[COMPLETE]` → ACK-tally event, `[CLIENT]` stage/failure lines → events
   (last failure kept as the reason). Honors cancel file (SIGTERM → `stopped`)
   and a configurable deadline. Terminal progress carries the **last live
