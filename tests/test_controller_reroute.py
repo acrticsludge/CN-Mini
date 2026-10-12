@@ -240,3 +240,20 @@ def test_recompute_replaces_stale_flows(ctrl, monkeypatch):
                if m.get('command') == FakeProto.OFPFC_DELETE]
     assert deletes, 'reroute installed new flows without deleting the stale ones'
     assert all(dpid != 2 for dpid, _s, _d in c.installed_flows)
+
+
+def test_congestion_warns_once_per_flow(ctrl):
+    """A heavy transfer re-trips the packet threshold every poll; the log must
+    show each flow once instead of burying the Link lines in repeats."""
+    import types
+    from unittest.mock import MagicMock
+    mod, c = ctrl
+    c.logger = MagicMock()
+    heavy_a = types.SimpleNamespace(priority=1, packet_count=20000, match='flow-A')
+    heavy_b = types.SimpleNamespace(priority=1, packet_count=30000, match='flow-B')
+    table_miss = types.SimpleNamespace(priority=0, packet_count=999999, match='miss')
+    ev = types.SimpleNamespace(
+        msg=types.SimpleNamespace(body=[heavy_a, heavy_b, table_miss]))
+    c.flow_stats_reply_handler(ev)
+    c.flow_stats_reply_handler(ev)
+    assert c.logger.warning.call_count == 2  # A + B once each; miss skipped

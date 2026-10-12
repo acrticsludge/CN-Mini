@@ -32,6 +32,10 @@ class SDNController(app_manager.RyuApp):
         # recompute can delete the stale ones first. Without this, a reroute
         # leaves the old flow (same match, dead out_port) next to the new one.
         self.installed_flows = set()
+        # Flow matches already reported as congested. A 1 GB transfer pushes
+        # hundreds of thousands of packets through one flow, so warning on
+        # every 5 s poll buries the Link DOWN/UP lines that actually matter.
+        self.warned_congestion = set()
         self.monitor_thread = hub.spawn(self._monitor)
 
     # ---- Switch Features ----
@@ -309,6 +313,13 @@ class SDNController(app_manager.RyuApp):
                 continue
             packet_count = stat.packet_count
             if packet_count > 10000:
+                # Once per flow: a heavy transfer re-trips this every poll,
+                # and repeats hide the port events. Rerouted flows carry a
+                # different in_port, so they warn once each on their own.
+                key = str(stat.match)
+                if key in self.warned_congestion:
+                    continue
+                self.warned_congestion.add(key)
                 self.logger.warning(
                     "Congestion detected: flow %s has %d packets",
                     stat.match, packet_count)
