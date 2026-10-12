@@ -1,4 +1,4 @@
-# D1 Demo Script — Distributed Backup System (3 speakers)
+# D1 Demo Script — Distributed Backup System (3 speakers, in order)
 
 Timing: ~10 minutes + questions. Two rules for all three of you:
 1. Say **"reported"** where the slides say reported, **"to be verified"** where
@@ -6,11 +6,11 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 2. Every short form is expanded the first time you say it — if you forget the
    expansion mid-demo, just read it off this script. Nobody will mind.
 
-## Who says what
+## Who says what (slides in order, 5 each)
 
-- **Arush (Speaker 1)** — slides 1–3 (open, architecture, problems) + slides 14–15 (tests, close)
-- **Aryan (Speaker 2)** — slides 4–6 (sockets, sequence picture, protocol) + slides 11–12 (scenario + live demo)
-- **Anubhav (Speaker 3)** — slides 7–10 (topology, network brain, reroute, integration) + slide 13 (performance)
+- **Arush** — slides 1–5 (open, architecture, problems, TCP sockets, socket-flow picture)
+- **Aryan** — slides 6–10 (protocol, topology picture, Mininet+SDN, reroute, integration)
+- **Anubhav** — slides 11–15 (scenario, live demo, performance, tests, close)
 
 ---
 
@@ -35,7 +35,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > requests like your browser makes — it never touches a single file packet.
 > The flow is: client connects, DATA goes out, ACKs — acknowledgements, meaning
 > "got it" messages — come back, and Ryu learns the network and reacts when
-> ports go down. Over to Aryan for why each piece exists.
+> ports go down.
 
 ## ARUSH — Slide 3: Main Problems
 
@@ -49,7 +49,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > event arrives and pushes new flow rules — new instruction sheets — to the
 > switches.
 
-## ARYAN — Slide 4: TCP Socket Programming
+## ARUSH — Slide 4: TCP Socket Programming
 
 > The socket story in one walk: the client calls `connect`, the server has
 > already done `bind`, `listen`, `accept` — that handshake is the famous 3-way
@@ -63,12 +63,14 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > the chunk passed its CRC check **and was written to disk** — and only that
 > ACK moves RESUME forward.
 
-## ARYAN — Slide 5: Socket-flow picture
+## ARUSH — Slide 5: Socket-flow picture
 
 > Follow the arrows top to bottom: connect, HELLO, ready, then the chunk loop
 > — DATA one way, ACK the other — and clean close at the bottom. The side
 > branch is the interesting one: when the connection drops, we do *not* go
 > back to the top; RESUME jumps back in mid-loop at the first missing chunk.
+> That is the data half of the project — over to Aryan for the protocol and
+> the network half.
 
 ## ARYAN — Slide 6: Protocol and Integrity
 
@@ -83,7 +85,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > the server's folder is bind-mounted — that means shared — into our repo, so
 > half-written files are still there after a reboot.
 
-## ANUBHAV — Slide 7: Topology picture
+## ARYAN — Slide 7: Topology picture
 
 > This is our actual Mininet network — Mininet is a tool that fakes a whole
 > network inside one computer. Four OVS switches — OVS is Open vSwitch, a
@@ -94,7 +96,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > path, a dead link ends the story; with six links, the controller always has
 > somewhere else to send traffic.
 
-## ANUBHAV — Slide 8: Mininet + SDN Controller
+## ARYAN — Slide 8: Mininet + SDN Controller
 
 > Two files do all of this. `topology.py` builds the virtual network, connects
 > it to the controller using OpenFlow 1.3, and shares the backup folders so
@@ -108,7 +110,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > `dump-flows` — which prints a switch's instruction sheet so you can see the
 > rules with your own eyes.
 
-## ANUBHAV — Slide 9: Dynamic Routing and Failure Recovery
+## ARYAN — Slide 9: Dynamic Routing and Failure Recovery
 
 > Left: all links up, h1 reaches h3 through switches s1–s2. Right: the s1–s2
 > link dies — the cross on the diagram. The chain is five steps: the port goes
@@ -121,7 +123,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > this; that difference is the whole point of doing it with SDN —
 > Software-Defined Networking.
 
-## ANUBHAV — Slide 10: Socket–SDN Integration
+## ARYAN — Slide 10: Socket–SDN Integration
 
 > The application layer — the backup program — splits files, connects,
 > verifies, stores, and on error resumes or switches to the backup server h4.
@@ -132,9 +134,10 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > app; they interact only through the network itself.** Recovery comes in three
 > independent layers: Ryu reroutes around dead links, TCP — Transmission
 > Control Protocol — retransmits lost bytes, and the app resumes or fails over
-> to the other server. Any one layer can save a transfer the others lost.
+> to the other server. Any one layer can save a transfer the others lost. Over
+> to Anubhav for the failure demo and the results.
 
-## ARYAN — Slide 11: Challenging Scenario
+## ANUBHAV — Slide 11: Challenging Scenario
 
 > Our challenge test: a 1 MB file, 128 chunks, sent from h1 to h3 over s1–s2 —
 > then we kill s1–s2 in the middle of the transfer, either from the dashboard
@@ -145,14 +148,14 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > connection alive is *unverified* — our notes credit TCP retransmission and we
 > still have to confirm it in the client log; the app-level RESUME being used
 > is *unverified* for the same reason; file integrity at 128 out of 128 is
-> reported, and we re-check it live with `sha256sum` — a fingerprint command
-> that proves two files are byte-identical — in the demo.
+> reported, and I re-check it live with `sha256sum` — a fingerprint command
+> that proves two files are byte-identical — in the demo, which starts now.
 
-## ARYAN — Slide 12: LIVE DEMO (Aryan drives, Anubhav narrates the network)
+## ANUBHAV — Slide 12: LIVE DEMO (Anubhav drives, Aryan narrates the network)
 
-1. `mininet> pingall` — all reachable. (Anubhav: "Baseline is green.")
+1. `mininet> pingall` — all reachable. (Aryan: "Baseline is green.")
 2. Dashboard: pick the 1 MB file, **Start Transfer** — point at the progress bar.
-3. Mid-transfer: **Trigger Link Failure** — (Anubhav, watching the controller
+3. Mid-transfer: **Trigger Link Failure** — (Aryan, watching the controller
    terminal: "Port-down alert arrived — recomputing — new flows installed.")
 4. Transfer completes 128/128 → `sha256sum` the original and the stored copy:
    identical fingerprints.
@@ -172,7 +175,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > static result is pass-or-fail, so a fair speed comparison is impossible, and
 > bigger files and loss percentages are still to be measured.
 
-## ARUSH — Slide 14: Testing and Results
+## ANUBHAV — Slide 14: Testing and Results
 
 > Walk the table row by row, and read the status column *exactly as written* —
 > most unit-test rows say *pending runs*, the Mininet rows say *not documented
@@ -180,7 +183,7 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 > column is our work plan for phase 2, not a weakness: every test case already
 > defines its starting condition and its expected result before we run it.
 
-## ARUSH — Slide 15: Conclusion + close
+## ANUBHAV — Slide 15: Conclusion + close
 
 > What we demonstrated: TCP sockets with a custom message protocol, CRC codes
 > with per-chunk ACKs and resume, Mininet plus OpenFlow 1.3 plus the Ryu
@@ -201,20 +204,20 @@ Timing: ~10 minutes + questions. Two rules for all three of you:
 
 - **Why TCP — Transmission Control Protocol — and not UDP?** — TCP gives
   ordered, reliable bytes plus free retransmission; our ACKs add
-  storage-level certainty on top.
+  storage-level certainty on top. (Arush)
 - **TCP ACK versus your ACK?** — Kernel receipt versus CRC-checked-and-stored;
-  only ours moves resume forward.
+  only ours moves resume forward. (Arush)
 - **Why 8 KB chunks?** — Small enough to resume cheaply, big enough to avoid
-  drowning in per-chunk ACKs; 1 MB ÷ 8 KB = 128 frames.
+  drowning in per-chunk ACKs; 1 MB ÷ 8 KB = 128 frames. (Aryan)
 - **CRC — Cyclic Redundancy Check — versus SHA?** — CRC is fast for per-chunk
-  checks; it detects corruption, not attackers (a listed limitation).
+  checks; it detects corruption, not attackers (a listed limitation). (Aryan)
 - **Server h3 dies mid-transfer?** — The client tries servers in order, so h4
-  takes over (failover).
+  takes over (failover). (Aryan — or Anubhav, whoever gets asked)
 - **How do app and controller interact?** — They don't, directly — only
-  through the network itself (slide 10).
+  through the network itself (slide 10). (Aryan)
 - **The controller program itself dies?** — Switches keep their last
   instructions; new events go unhandled — an honest gap, listed as future work.
 - **Static baseline numbers?** — Pass-or-fail outcome, so no fair speed
-  comparison — stated on slide 13.
+  comparison — stated on slide 13. (Anubhav)
 - **Prove the reroute path?** — Controller log plus `dump-flows`, live in
-  the demo.
+  the demo. (Anubhav)
