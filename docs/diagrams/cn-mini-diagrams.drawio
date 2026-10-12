@@ -1,186 +1,186 @@
-<mxfile host="app.diagrams.net" agent="opencode" pages="2">
-  <diagram id="arch" name="Architecture">
-    <mxGraphModel dx="1704" dy="936" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="960" math="0" shadow="0">
-      <root>
-        <mxCell id="0" />
-        <mxCell id="1" parent="0" />
-        <mxCell id="vm" parent="1" style="swimlane;startSize=30;fillColor=#F5F5F5;strokeColor=#666666;fontStyle=1;fontSize=14;align=left;spacingLeft=10;html=1;" value="Everything runs on one Ubuntu VM: your browser, the web app, the simulated network, and the controller" vertex="1">
-          <mxGeometry height="900" width="1160" x="20" y="20" as="geometry" />
-        </mxCell>
-        <mxCell id="browser" parent="vm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" value="&lt;b&gt;Your browser&lt;/b&gt;&#xa;open localhost:5000" vertex="1">
-          <mxGeometry height="60" width="170" x="30" y="60" as="geometry" />
-        </mxCell>
-        <mxCell id="flask" parent="vm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;align=left;spacingLeft=8;" value="&lt;b&gt;Web dashboard&lt;/b&gt;&#xa;Buttons to start a backup&#xa;or cut a network link&#xa;refreshes status every 2s" vertex="1">
-          <mxGeometry height="130" width="170" x="30" y="160" as="geometry" />
-        </mxCell>
-        <mxCell id="shared" parent="vm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;align=left;spacingLeft=8;" value="&lt;b&gt;shared_files/&lt;/b&gt;&#xa;the message box between&#xa;the web app and the network&#xa;(simple JSON files)" vertex="1">
-          <mxGeometry height="120" width="170" x="30" y="320" as="geometry" />
-        </mxCell>
-        <mxCell id="stored" parent="vm" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#D5E8D4;strokeColor=#82B366;" value="&lt;b&gt;Saved backups&lt;/b&gt;&#xa;received files from&#xa;h3 and h4, kept on disk&#xa;listed in the dashboard" vertex="1">
-          <mxGeometry height="110" width="170" x="30" y="470" as="geometry" />
-        </mxCell>
-        <mxCell id="mn" parent="vm" style="swimlane;startSize=30;fillColor=#E1D5E7;strokeColor=#9673A6;html=1;fontStyle=1;" value="Simulated network (Mininet)" vertex="1">
-          <mxGeometry height="560" width="640" x="240" y="50" as="geometry" />
-        </mxCell>
-        <mxCell id="h1" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;align=left;spacingLeft=8;" value="&lt;b&gt;h1 — Client&lt;/b&gt;&#xa;reads new jobs from&#xa;shared_files/ and sends&#xa;the file to a backup server" vertex="1">
-          <mxGeometry height="120" width="190" x="20" y="60" as="geometry" />
-        </mxCell>
-        <mxCell id="h2" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;align=left;spacingLeft=8;" value="&lt;b&gt;h2 — Extra client&lt;/b&gt;&#xa;spare client you can&#xa;run by hand for testing" vertex="1">
-          <mxGeometry height="90" width="150" x="20" y="330" as="geometry" />
-        </mxCell>
-        <mxCell id="h3" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;align=left;spacingLeft=8;" value="&lt;b&gt;h3 — Main backup server&lt;/b&gt;&#xa;receives the file pieces,&#xa;double-checks each one,&#xa;then stores them safely" vertex="1">
-          <mxGeometry height="120" width="190" x="430" y="60" as="geometry" />
-        </mxCell>
-        <mxCell id="h4" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;align=left;spacingLeft=8;" value="&lt;b&gt;h4 — Spare backup server&lt;/b&gt;&#xa;client switches to this one&#xa;if the main server is unreachable" vertex="1">
-          <mxGeometry height="90" width="180" x="440" y="330" as="geometry" />
-        </mxCell>
-        <mxCell id="sw" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;" value="&lt;b&gt;Switches s1–s4&lt;/b&gt;&#xa;all wired to each other&#xa;no traffic flows unless the&#xa;controller says so" vertex="1">
-          <mxGeometry height="110" width="230" x="190" y="200" as="geometry" />
-        </mxCell>
-        <mxCell id="linkctl" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;" value="&lt;b&gt;Fault switch&lt;/b&gt;&#xa;cuts or restores a link to&#xa;test failure recovery" vertex="1">
-          <mxGeometry height="90" width="230" x="190" y="440" as="geometry" />
-        </mxCell>
-        <mxCell id="e_h1_sw" edge="1" parent="mn" source="h1" style="html=1;endArrow=classic;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="sw" value="file pieces (TCP)">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_sw_h3" edge="1" parent="mn" source="sw" style="html=1;endArrow=classic;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="h3" value="to main server">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_sw_h4" edge="1" parent="mn" source="sw" style="html=1;endArrow=classic;dashed=1;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="h4" value="to spare server">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_h2_sw" edge="1" parent="mn" source="h2" style="html=1;endArrow=none;dashed=1;fontSize=11;labelBackgroundColor=#ffffff;" target="sw" value="standby">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_linkctl_sw" edge="1" parent="mn" source="linkctl" style="html=1;endArrow=classic;dashed=1;strokeColor=#B85450;fontSize=11;labelBackgroundColor=#ffffff;" target="sw" value="link down / up">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="ryu" parent="vm" style="swimlane;startSize=30;fillColor=#FFE6CC;strokeColor=#D79B00;html=1;fontStyle=1;" value="SDN controller (Ryu) — the traffic cop" vertex="1">
-          <mxGeometry height="560" width="220" x="920" y="50" as="geometry" />
-        </mxCell>
-        <mxCell id="r1" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Connects to all switches&lt;/b&gt;&#xa;watches traffic every 5s" vertex="1">
-          <mxGeometry height="70" width="190" x="15" y="45" as="geometry" />
-        </mxCell>
-        <mxCell id="r2" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;New switch joins&lt;/b&gt;&#xa;teaches it to ask the&#xa;controller what to do" vertex="1">
-          <mxGeometry height="55" width="190" x="15" y="125" as="geometry" />
-        </mxCell>
-        <mxCell id="r3" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Listens for link changes&lt;/b&gt;&#xa;hears when a cable goes&#xa;down or comes back up" vertex="1">
-          <mxGeometry height="70" width="190" x="15" y="200" as="geometry" />
-        </mxCell>
-        <mxCell id="r4" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Rebuilds the map&lt;/b&gt;&#xa;draws the network again&#xa;with the latest link states" vertex="1">
-          <mxGeometry height="65" width="190" x="15" y="290" as="geometry" />
-        </mxCell>
-        <mxCell id="r5" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Picks the shortest path&lt;/b&gt;&#xa;fewest hops between each&#xa;client and server" vertex="1">
-          <mxGeometry height="70" width="190" x="15" y="380" as="geometry" />
-        </mxCell>
-        <mxCell id="r6" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Updates the switches&lt;/b&gt;&#xa;removes old routes,&#xa;installs the new ones" vertex="1">
-          <mxGeometry height="70" width="190" x="15" y="475" as="geometry" />
-        </mxCell>
-        <mxCell id="e_r3_r4" edge="1" parent="ryu" source="r3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;" target="r4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_r4_r5" edge="1" parent="ryu" source="r4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;" target="r5">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_r5_r6" edge="1" parent="ryu" source="r5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;" target="r6">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="proto" parent="vm" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fillColor=#FFFFFF;strokeColor=#999999;fontSize=12;" value="&lt;b&gt;How a backup works, step by step&lt;/b&gt;&#xa;&lt;br&gt;&#xa;1. Client: &amp;quot;Hello, here comes report.pdf (5 MB)&amp;quot;&#xa;&lt;br&gt;2. Server: &amp;quot;Ready, send it&amp;quot;&#xa;&lt;br&gt;3. Client chops the file into 8 KB pieces and sends them one by one, each piece with a checksum attached&#xa;&lt;br&gt;4. Server re-checks the checksum: &amp;quot;got piece #12, next&amp;quot; — a corrupted piece is thrown away and never counted&#xa;&lt;br&gt;5. When every piece is stored, the transfer is complete&#xa;&lt;br&gt;&#xa;&lt;b&gt;If the transfer is interrupted&lt;/b&gt; (e.g. a link is cut): the client reconnects and says &amp;quot;continue from piece #12&amp;quot; — nothing already sent is repeated.&#xa;&lt;br&gt;&#xa;&lt;i&gt;Nerdy details: custom binary messages over one TCP connection; CRC32 checksum per piece.&lt;/i&gt;" vertex="1">
-          <mxGeometry height="220" width="1110" x="25" y="628" as="geometry" />
-        </mxCell>
-        <mxCell id="e_browser_flask" edge="1" parent="vm" source="browser" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;fontSize=11;labelBackgroundColor=#ffffff;" target="flask" value="clicks, sees status">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_flask_shared" edge="1" parent="vm" source="flask" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;fontSize=11;labelBackgroundColor=#ffffff;" target="shared" value="drops jobs, reads progress">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_shared_h1" edge="1" parent="vm" source="shared" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;startArrow=classic;endArrow=classic;fontSize=11;labelBackgroundColor=#ffffff;" target="h1" value="jobs out, progress back">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_shared_linkctl" edge="1" parent="vm" source="shared" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;dashed=1;strokeColor=#B85450;fontSize=11;labelBackgroundColor=#ffffff;" target="linkctl" value="&amp;quot;cut this link&amp;quot;">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e_sw_ryu" edge="1" parent="vm" source="sw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;startArrow=classic;endArrow=classic;strokeColor=#D79B00;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="r3" value="&amp;quot;a link just broke!&amp;quot; / new routes">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-      </root>
-    </mxGraphModel>
-  </diagram>
-  <diagram id="topo" name="Topology">
-    <mxGraphModel dx="1200" dy="680" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="680" math="0" shadow="0">
-      <root>
-        <mxCell id="0" />
-        <mxCell id="1" parent="0" />
-        <mxCell id="title" value="The network: 4 switches all wired to each other, 4 machines" style="text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" vertex="1" parent="1">
-          <mxGeometry x="40" y="20" width="900" height="30" as="geometry" />
-        </mxCell>
-        <mxCell id="s1" value="s1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="300" y="170" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="s2" value="s2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="560" y="170" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="s3" value="s3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="300" y="400" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="s4" value="s4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" vertex="1" parent="1">
-          <mxGeometry x="560" y="400" width="110" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="h1" value="h1 (client)&#xa;10.0.0.1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1">
-          <mxGeometry x="60" y="170" width="120" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="h2" value="h2 (client)&#xa;10.0.0.2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" vertex="1" parent="1">
-          <mxGeometry x="60" y="400" width="120" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="h3" value="h3 (server)&#xa;10.0.0.3:9000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;" vertex="1" parent="1">
-          <mxGeometry x="800" y="170" width="120" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="h4" value="h4 (server)&#xa;10.0.0.4:9000" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;" vertex="1" parent="1">
-          <mxGeometry x="800" y="400" width="120" height="60" as="geometry" />
-        </mxCell>
-        <mxCell id="L_h1s1" value="h1-s1" style="html=1;endArrow=none;strokeColor=#2E7D32;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="h1" target="s1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_h2s3" value="h2-s3" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="h2" target="s3">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_h3s2" value="s2-h3" style="html=1;endArrow=none;strokeColor=#2E7D32;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s2" target="h3">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_h4s4" value="s4-h4" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s4" target="h4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_s1s2" value="s1-s2 (normal route — this is what we break)" style="html=1;endArrow=none;strokeColor=#2E7D32;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s1" target="s2">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_s3s4" value="s3-s4" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s3" target="s4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_s1s3" value="s1-s3" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s1" target="s3">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_s2s4" value="s2-s4" style="html=1;endArrow=none;strokeColor=#EF6C00;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="s2" target="s4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_s1s4" value="" style="html=1;endArrow=none;strokeColor=#EF6C00;strokeWidth=4;" edge="1" parent="1" source="s1" target="s4">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="L_s2s3" value="" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;" edge="1" parent="1" source="s2" target="s3">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="lbl_s1s4" value="s1-s4 (backup)" style="text;html=1;fontSize=11;align=center;fillColor=#ffffff;" vertex="1" parent="1">
-          <mxGeometry x="370" y="300" width="100" height="20" as="geometry" />
-        </mxCell>
-        <mxCell id="lbl_s2s3" value="s2-s3" style="text;html=1;fontSize=11;align=center;fillColor=#ffffff;" vertex="1" parent="1">
-          <mxGeometry x="470" y="225" width="80" height="20" as="geometry" />
-        </mxCell>
-        <mxCell id="legend" value="&lt;b&gt;What the colors mean&lt;/b&gt;&#xa;&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;🟢 &lt;b&gt;Green&lt;/b&gt;&lt;/font&gt; — the normal route: h1 → s1 → s2 → h3&#xa;&lt;font color=&quot;#B85450&quot;&gt;🔴 &lt;b&gt;Red&lt;/b&gt;&lt;/font&gt; — a broken link (the demo cuts s1–s2)&#xa;&lt;font color=&quot;#EF6C00&quot;&gt;🟠 &lt;b&gt;Orange&lt;/b&gt;&lt;/font&gt; — the new detour after the break: h1 → s1 → s4 → s2 → h3&#xa;&lt;font color=&quot;#666666&quot;&gt;⚪ &lt;b&gt;Grey&lt;/b&gt;&lt;/font&gt; — links that carry no traffic in the demo&#xa;&lt;br&gt;The controller simply picks the path with the fewest hops, so once s1–s2 is down it automatically goes the other way." style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fillColor=#FFFFFF;strokeColor=#999999;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="40" y="500" width="880" height="140" as="geometry" />
-        </mxCell>
-        <mxCell id="facts" value="&lt;b&gt;Quick facts&lt;/b&gt;&#xa;&lt;br&gt;Clients: h1, h2&#xa;Backup servers: h3, h4&#xa;File is sent in 8 KB pieces&#xa;Switches are controlled remotely&#xa;Route = fewest hops&#xa;Recovery after a break: ~1.3 s" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fillColor=#F5F5F5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
-          <mxGeometry x="960" y="170" width="220" height="200" as="geometry" />
-        </mxCell>
-      </root>
-    </mxGraphModel>
-  </diagram>
+<mxfile host="65bd71144e" pages="2">
+    <diagram id="arch" name="Architecture">
+        <mxGraphModel dx="1206" dy="1089" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="960" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="vm" parent="1" style="swimlane;startSize=30;fillColor=#F5F5F5;strokeColor=#666666;fontStyle=1;fontSize=14;align=left;spacingLeft=10;html=1;" value="Everything runs on one Ubuntu VM: your browser, the web app, the simulated network, and the controller" vertex="1">
+                    <mxGeometry height="900" width="1160" x="20" y="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="browser" parent="vm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" value="&lt;b&gt;Your browser&lt;/b&gt;&#xa;open localhost:5000" vertex="1">
+                    <mxGeometry height="60" width="170" x="30" y="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="flask" parent="vm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;align=left;spacingLeft=8;" value="&lt;b&gt;Web dashboard&lt;/b&gt;&#xa;Buttons to start a backup&#xa;or cut a network link&#xa;refreshes status every 2s" vertex="1">
+                    <mxGeometry height="130" width="170" x="30" y="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="shared" parent="vm" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;align=left;spacingLeft=8;" value="&lt;b&gt;shared_files/&lt;/b&gt;&#xa;the message box between&#xa;the web app and the network&#xa;(simple JSON files)" vertex="1">
+                    <mxGeometry height="120" width="170" x="30" y="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="stored" parent="vm" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=12;fillColor=#D5E8D4;strokeColor=#82B366;" value="&lt;b&gt;Saved backups&lt;/b&gt;&#xa;received files from&#xa;h3 and h4, kept on disk&#xa;listed in the dashboard" vertex="1">
+                    <mxGeometry height="110" width="170" x="30" y="470" as="geometry"/>
+                </mxCell>
+                <mxCell id="mn" parent="vm" style="swimlane;startSize=30;fillColor=#E1D5E7;strokeColor=#9673A6;html=1;fontStyle=1;" value="Simulated network (Mininet)" vertex="1">
+                    <mxGeometry height="560" width="640" x="240" y="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="h1" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;align=left;spacingLeft=8;" value="&lt;b&gt;h1 — Client&lt;/b&gt;&#xa;reads new jobs from&#xa;shared_files/ and sends&#xa;the file to a backup server" vertex="1">
+                    <mxGeometry height="120" width="190" x="20" y="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="h2" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;align=left;spacingLeft=8;" value="&lt;b&gt;h2 — Extra client&lt;/b&gt;&#xa;spare client you can&#xa;run by hand for testing" vertex="1">
+                    <mxGeometry height="90" width="150" x="20" y="330" as="geometry"/>
+                </mxCell>
+                <mxCell id="h3" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;align=left;spacingLeft=8;" value="&lt;b&gt;h3 — Main backup server&lt;/b&gt;&#xa;receives the file pieces,&#xa;double-checks each one,&#xa;then stores them safely" vertex="1">
+                    <mxGeometry height="120" width="190" x="430" y="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="h4" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;align=left;spacingLeft=8;" value="&lt;b&gt;h4 — Spare backup server&lt;/b&gt;&#xa;client switches to this one&#xa;if the main server is unreachable" vertex="1">
+                    <mxGeometry height="90" width="180" x="440" y="330" as="geometry"/>
+                </mxCell>
+                <mxCell id="sw" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;" value="&lt;b&gt;Switches s1–s4&lt;/b&gt;&#xa;all wired to each other&#xa;no traffic flows unless the&#xa;controller says so" vertex="1">
+                    <mxGeometry height="110" width="230" x="190" y="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="linkctl" parent="mn" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;" value="&lt;b&gt;Fault switch&lt;/b&gt;&#xa;cuts or restores a link to&#xa;test failure recovery" vertex="1">
+                    <mxGeometry height="90" width="230" x="190" y="440" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_h1_sw" edge="1" parent="mn" source="h1" style="html=1;endArrow=classic;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="sw" value="file pieces (TCP)">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_sw_h3" edge="1" parent="mn" source="sw" style="html=1;endArrow=classic;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="h3" value="to main server">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_sw_h4" edge="1" parent="mn" source="sw" style="html=1;endArrow=classic;dashed=1;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="h4" value="to spare server">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_h2_sw" edge="1" parent="mn" source="h2" style="html=1;endArrow=none;dashed=1;fontSize=11;labelBackgroundColor=#ffffff;" target="sw" value="standby">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_linkctl_sw" edge="1" parent="mn" source="linkctl" style="html=1;endArrow=classic;dashed=1;strokeColor=#B85450;fontSize=11;labelBackgroundColor=#ffffff;" target="sw" value="link down / up">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="ryu" parent="vm" style="swimlane;startSize=30;fillColor=#FFE6CC;strokeColor=#D79B00;html=1;fontStyle=1;" value="SDN controller (Ryu) — the traffic cop" vertex="1">
+                    <mxGeometry height="560" width="220" x="920" y="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="r1" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Connects to all switches&lt;/b&gt;&#xa;watches traffic every 5s" vertex="1">
+                    <mxGeometry height="70" width="190" x="15" y="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="r2" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;New switch joins&lt;/b&gt;&#xa;teaches it to ask the&#xa;controller what to do" vertex="1">
+                    <mxGeometry height="55" width="190" x="15" y="125" as="geometry"/>
+                </mxCell>
+                <mxCell id="r3" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Listens for link changes&lt;/b&gt;&#xa;hears when a cable goes&#xa;down or comes back up" vertex="1">
+                    <mxGeometry height="70" width="190" x="15" y="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="r4" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Rebuilds the map&lt;/b&gt;&#xa;draws the network again&#xa;with the latest link states" vertex="1">
+                    <mxGeometry height="65" width="190" x="15" y="290" as="geometry"/>
+                </mxCell>
+                <mxCell id="r5" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Picks the shortest path&lt;/b&gt;&#xa;fewest hops between each&#xa;client and server" vertex="1">
+                    <mxGeometry height="70" width="190" x="15" y="380" as="geometry"/>
+                </mxCell>
+                <mxCell id="r6" parent="ryu" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;align=left;spacingLeft=8;" value="&lt;b&gt;Updates the switches&lt;/b&gt;&#xa;removes old routes,&#xa;installs the new ones" vertex="1">
+                    <mxGeometry height="70" width="190" x="15" y="475" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_r3_r4" edge="1" parent="ryu" source="r3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;" target="r4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_r4_r5" edge="1" parent="ryu" source="r4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;" target="r5">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_r5_r6" edge="1" parent="ryu" source="r5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;" target="r6">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="proto" parent="vm" style="rounded=0;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=12;spacingTop=8;fillColor=#FFFFFF;strokeColor=#999999;fontSize=12;" value="&lt;b&gt;How a backup works, step by step&lt;/b&gt;&#xa;&lt;br&gt;&#xa;1. Client: &amp;quot;Hello, here comes report.pdf (5 MB)&amp;quot;&#xa;&lt;br&gt;2. Server: &amp;quot;Ready, send it&amp;quot;&#xa;&lt;br&gt;3. Client chops the file into 8 KB pieces and sends them one by one, each piece with a checksum attached&#xa;&lt;br&gt;4. Server re-checks the checksum: &amp;quot;got piece #12, next&amp;quot; — a corrupted piece is thrown away and never counted&#xa;&lt;br&gt;5. When every piece is stored, the transfer is complete&#xa;&lt;br&gt;&#xa;&lt;b&gt;If the transfer is interrupted&lt;/b&gt; (e.g. a link is cut): the client reconnects and says &amp;quot;continue from piece #12&amp;quot; — nothing already sent is repeated.&#xa;&lt;br&gt;&#xa;&lt;i&gt;Nerdy details: custom binary messages over one TCP connection; CRC32 checksum per piece.&lt;/i&gt;" vertex="1">
+                    <mxGeometry height="220" width="1110" x="25" y="628" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_browser_flask" edge="1" parent="vm" source="browser" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;fontSize=11;labelBackgroundColor=#ffffff;" target="flask" value="clicks, sees status">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_flask_shared" edge="1" parent="vm" source="flask" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;fontSize=11;labelBackgroundColor=#ffffff;" target="shared" value="drops jobs, reads progress">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_shared_h1" edge="1" parent="vm" source="shared" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;startArrow=classic;endArrow=classic;fontSize=11;labelBackgroundColor=#ffffff;" target="h1" value="jobs out, progress back">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_shared_linkctl" edge="1" parent="vm" source="shared" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;dashed=1;strokeColor=#B85450;fontSize=11;labelBackgroundColor=#ffffff;" target="linkctl" value="&amp;quot;cut this link&amp;quot;">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e_sw_ryu" edge="1" parent="vm" source="sw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;startArrow=classic;endArrow=classic;strokeColor=#D79B00;strokeWidth=2;fontSize=11;labelBackgroundColor=#ffffff;" target="r3" value="&amp;quot;a link just broke!&amp;quot; / new routes">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="topo" name="Topology">
+        <mxGraphModel dx="1189" dy="1073" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="680" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=16;" value="The network: 4 switches all wired to each other, 4 machines" vertex="1">
+                    <mxGeometry height="30" width="900" x="40" y="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="s1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" value="s1" vertex="1">
+                    <mxGeometry height="60" width="110" x="300" y="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="s2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" value="s2" vertex="1">
+                    <mxGeometry height="60" width="110" x="560" y="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="s3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" value="s3" vertex="1">
+                    <mxGeometry height="60" width="110" x="300" y="400" as="geometry"/>
+                </mxCell>
+                <mxCell id="s4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontStyle=1;fontSize=14;" value="s4" vertex="1">
+                    <mxGeometry height="60" width="110" x="560" y="400" as="geometry"/>
+                </mxCell>
+                <mxCell id="h1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" value="h1 (client)&#xa;10.0.0.1" vertex="1">
+                    <mxGeometry height="60" width="120" x="60" y="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="h2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;" value="h2 (client)&#xa;10.0.0.2" vertex="1">
+                    <mxGeometry height="60" width="120" x="60" y="400" as="geometry"/>
+                </mxCell>
+                <mxCell id="h3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;" value="h3 (server)&#xa;10.0.0.3:9000" vertex="1">
+                    <mxGeometry height="60" width="120" x="800" y="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="h4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;" value="h4 (server)&#xa;10.0.0.4:9000" vertex="1">
+                    <mxGeometry height="60" width="120" x="800" y="400" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_h1s1" edge="1" parent="1" source="h1" style="html=1;endArrow=none;strokeColor=#2E7D32;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" target="s1" value="h1-s1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_h2s3" edge="1" parent="1" source="h2" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" target="s3" value="h2-s3">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_h3s2" edge="1" parent="1" source="s2" style="html=1;endArrow=none;strokeColor=#2E7D32;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" target="h3" value="s2-h3">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_h4s4" edge="1" parent="1" source="s4" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" target="h4" value="s4-h4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_s1s2" edge="1" parent="1" source="s1" style="html=1;endArrow=none;strokeColor=#2E7D32;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" target="s2" value="s1-s2 (normal route — this is what we break)">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_s3s4" edge="1" parent="1" source="s3" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" target="s4" value="s3-s4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_s1s3" edge="1" parent="1" source="s1" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;fontSize=11;labelBackgroundColor=#ffffff;" target="s3" value="s1-s3">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_s2s4" edge="1" parent="1" source="s2" style="html=1;endArrow=none;strokeColor=#EF6C00;strokeWidth=4;fontSize=11;labelBackgroundColor=#ffffff;" target="s4" value="s2-s4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_s1s4" edge="1" parent="1" source="s1" style="html=1;endArrow=none;strokeColor=#EF6C00;strokeWidth=4;" target="s4" value="">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="L_s2s3" edge="1" parent="1" source="s2" style="html=1;endArrow=none;strokeWidth=2;strokeColor=#666666;" target="s3" value="">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="lbl_s1s4" parent="1" style="text;html=1;fontSize=11;align=center;fillColor=#ffffff;" value="s1-s4 (backup)" vertex="1">
+                    <mxGeometry height="20" width="100" x="370" y="300" as="geometry"/>
+                </mxCell>
+                <mxCell id="lbl_s2s3" parent="1" style="text;html=1;fontSize=11;align=center;fillColor=#ffffff;" value="s2-s3" vertex="1">
+                    <mxGeometry height="20" width="80" x="470" y="225" as="geometry"/>
+                </mxCell>
+                <mxCell id="legend" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fillColor=#FFFFFF;strokeColor=#999999;fontSize=12;" value="&lt;b&gt;What the colors mean&lt;/b&gt;&#xa;&lt;br&gt;&lt;font color=&quot;#2E7D32&quot;&gt;🟢 &lt;b&gt;Green&lt;/b&gt;&lt;/font&gt; — the normal route: h1 → s1 → s2 → h3&#xa;&lt;font color=&quot;#B85450&quot;&gt;🔴 &lt;b&gt;Red&lt;/b&gt;&lt;/font&gt; — a broken link (the demo cuts s1–s2)&#xa;&lt;font color=&quot;#EF6C00&quot;&gt;🟠 &lt;b&gt;Orange&lt;/b&gt;&lt;/font&gt; — the new detour after the break: h1 → s1 → s4 → s2 → h3&#xa;&lt;font color=&quot;#666666&quot;&gt;⚪ &lt;b&gt;Grey&lt;/b&gt;&lt;/font&gt; — links that carry no traffic in the demo&#xa;&lt;br&gt;The controller simply picks the path with the fewest hops, so once s1–s2 is down it automatically goes the other way." vertex="1">
+                    <mxGeometry height="140" width="880" x="40" y="500" as="geometry"/>
+                </mxCell>
+                <mxCell id="facts" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=10;spacingTop=8;fillColor=#F5F5F5;strokeColor=#666666;fontSize=12;" value="&lt;b&gt;Quick facts&lt;/b&gt;&#xa;&lt;br&gt;Clients: h1, h2&#xa;Backup servers: h3, h4&#xa;File is sent in 8 KB pieces&#xa;Switches are controlled remotely&#xa;Route = fewest hops&#xa;Recovery after a break: ~1.3 s" vertex="1">
+                    <mxGeometry height="200" width="220" x="960" y="170" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
 </mxfile>
