@@ -22,16 +22,22 @@ and installs Dijkstra shortest-path flows, replacing them when links change.
   packet-out (with buffer id handling).
 - `port_status_handler` — on link up/down: logs, then `_update_topology()` +
   `_recompute_paths()` inside try/except that **logs loudly** instead of dying
-  silently (a dead handler = traffic kept flowing into a dead port).
+  silently (a dead handler = traffic kept flowing into a dead port). A DOWN
+  event additionally prunes `(switch, port)` — see below.
 - `flow_stats_reply_handler` — warns on flows over 10k packets ("congestion"),
   **skipping priority-0 table-miss**: the miss rule counts *every* unmatched
   packet, so including it buried real events in spam.
 
 ## Core logic
 
-- `_update_topology()` — **clears and rebuilds** the graph from
+- `_update_topology(prune=None)` — **clears and rebuilds** the graph from
   `get_switch()`/`get_link()`. The clear is the fix: without it a dead link's
   edge survived forever and every "reroute" kept using the failed link.
+  `prune=(dpid, port_no)` then drops every edge incident to that switch port:
+  discovery still lists a just-died link until LLDP times out, so without the
+  explicit amputation the recompute routes onto the corpse and the transfer
+  stalls until its socket timeout (observed on the VM: zero ACKs for 60+ s
+  despite clean recomputes).
 - `_recompute_paths()` — deletes installed flows first, then for every host
   pair resolves DPIDs and installs `nx.shortest_path`. Each pair is guarded so
   one bad pair can't abort the rest.

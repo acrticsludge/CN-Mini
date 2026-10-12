@@ -55,6 +55,12 @@ _request_counter = 0
 # written progress. Older than this with no result, the run is presumed dead.
 PENDING_GRACE = 120
 
+# ACKs already in flight when the link dies can land a chunk just after the
+# down-confirm; counting that as "recovered" once logged a bogus 0.3 s and
+# spent the one-shot clock while the transfer then stalled forever. Advances
+# inside this window are stragglers: the clock keeps running.
+RECOVERY_STRAGGLER_GRACE = 3.0
+
 TERMINAL_STATUSES = ('done', 'failed', 'stopped')
 
 
@@ -174,12 +180,15 @@ def _sync_transfer_state():
                 and transfer_state.get('link_down_at') is not None
                 and transfer_state.get('recovery_time') is None):
             dt = time.time() - transfer_state['link_down_at']
-            transfer_state['recovery_time'] = round(dt, 1)
-            transfer_state['link_down_at'] = None
-            log_event(f"[RECOVERY] Traffic flowing again "
-                      f"{dt:.1f}s after link down "
-                      f"({transfer_state['filename']}: "
-                      f"chunk {progress.get('chunk', 0)}/{total})")
+            if dt < RECOVERY_STRAGGLER_GRACE:
+                pass  # straggler ACK from before the blackhole; keep waiting
+            else:
+                transfer_state['recovery_time'] = round(dt, 1)
+                transfer_state['link_down_at'] = None
+                log_event(f"[RECOVERY] Traffic flowing again "
+                          f"{dt:.1f}s after link down "
+                          f"({transfer_state['filename']}: "
+                          f"chunk {progress.get('chunk', 0)}/{total})")
         if not progress.get('running') and not progress.get('cancelled'):
             transfer_state['progress'] = 100
 

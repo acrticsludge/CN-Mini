@@ -65,33 +65,52 @@ class SDNController(app_manager.RyuApp):
         datapath = msg.datapath
         ofproto = datapath.ofproto
         reason = msg.reason
+        port_no = msg.desc.port_no
 
+        # True when this event takes a link out of service. LLDP discovery
+        # lags the event by seconds, so get_link() still reports the dead
+        # link afterwards — the prune below removes it explicitly instead of
+        # trusting discovery, which would reroute traffic onto the corpse
+        # and stall the transfer until its socket timeout.
+        is_down = False
         if reason == ofproto.OFPPR_MODIFY:
-            port_state = msg.desc.state
-            if port_state & ofproto.OFPPS_LINK_DOWN:
+            if msg.desc.state & ofproto.OFPPS_LINK_DOWN:
                 self.logger.info("Link DOWN detected on switch %d port %s",
-                                 datapath.id, msg.desc.port_no)
+                                 datapath.id, port_no)
+                is_down = True
             else:
                 self.logger.info("Link UP detected on switch %d port %s",
-                                 datapath.id, msg.desc.port_no)
+                                 datapath.id, port_no)
+        elif reason == ofproto.OFPPR_DELETE:
+            self.logger.info("Link DOWN (port deleted) on switch %d port %s",
+                             datapath.id, port_no)
+            is_down = True
+        elif reason == ofproto.OFPPR_ADD:
+            self.logger.info("Link UP (port added) on switch %d port %s",
+                             datapath.id, port_no)
 
         # A handler exception in Ryu is only logged; the recompute is then
         # silently skipped and the network keeps forwarding into the dead port.
         # Log loudly instead so a failed reroute is visible, not silent.
         try:
-            self._update_topology()
+            self._update_topology(
+                prune=(datapath.id, port_no) if is_down else None)
             self._recompute_paths()
         except Exception as e:
             self.logger.error("Reroute failed after port event: %s", e)
 
     # ---- Topology Management ----
 
-    def _update_topology(self):
+    def _update_topology(self, prune=None):
         """Rebuild the topology graph from LLDP discoveries.
 
         The graph is cleared first: get_link() only reports live links, so
         without a rebuild the edge for a dead link stays forever and every
         "recompute" keeps routing through the failure it was meant to avoid.
+
+        prune=(dpid, port_no): after rebuilding, drop every edge incident to
+        that switch port. Discovery still lists a just-died link until LLDP
+        times out, so the prune is what actually removes the corpse.
         """
         self.topology.clear()
         switch_list = get_switch(self)
@@ -110,6 +129,20 @@ class SDNController(app_manager.RyuApp):
                                    src_port=src_port,
                                    dst_port=dst_port,
                                    weight=1)
+
+        if prune is not None:
+            dpid, port_no = prune
+            # Check both port attrs on both ends: discovery may report the
+            # link in either direction, swapping which end is src/dst.
+            doomed = [(u, v) for u, v, d in self.topology.edges(data=True)
+                      if (u == dpid and d.get('src_port') == port_no)
+                      or (v == dpid and d.get('dst_port') == port_no)
+                      or (u == dpid and d.get('dst_port') == port_no)
+                      or (v == dpid and d.get('src_port') == port_no)]
+            self.topology.remove_edges_from(doomed)
+            if doomed:
+                self.logger.info("Pruned %d edge(s) on switch %d port %s",
+                                 len(doomed), dpid, port_no)
 
     def _recompute_paths(self):
         """Recompute shortest paths and install flows on all switches.

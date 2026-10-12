@@ -144,6 +144,10 @@ class FakeProto:
     OFPP_ANY = 0xFFFFFFFF
     OFPG_ANY = 0xFFFFFFFF
     OFPIT_APPLY_ACTIONS = 4
+    OFPPR_ADD = 0
+    OFPPR_DELETE = 1
+    OFPPR_MODIFY = 2
+    OFPPS_LINK_DOWN = 1
 
 
 class FakeParser:
@@ -257,3 +261,31 @@ def test_congestion_warns_once_per_flow(ctrl):
     c.flow_stats_reply_handler(ev)
     c.flow_stats_reply_handler(ev)
     assert c.logger.warning.call_count == 2  # A + B once each; miss skipped
+
+
+def test_port_down_prunes_lagging_discovery(ctrl, monkeypatch):
+    """LLDP still lists a just-died link, so a rebuild alone reroutes onto the
+    corpse. The port-down event must amputate (switch, port) explicitly —
+    otherwise the transfer stalls until its socket timeout (the VM symptom:
+    zero ACKs for 60+ s despite clean recomputes)."""
+    import types
+    mod, c = ctrl
+    dead = FakeLink(FakeEnd(1, 11), FakeEnd(2, 21))
+    alt1 = FakeLink(FakeEnd(1, 12), FakeEnd(3, 32))
+    alt2 = FakeLink(FakeEnd(3, 33), FakeEnd(2, 22))
+    monkeypatch.setattr(mod, 'get_switch',
+                        lambda app: [FakeSwitch(1), FakeSwitch(2), FakeSwitch(3)])
+    monkeypatch.setattr(mod, 'get_link', lambda app: [dead, alt1, alt2])
+    monkeypatch.setattr(mod, 'get_host', lambda app: [
+        FakeHost('00:00:00:00:00:0A', FakePort(1)),
+        FakeHost('00:00:00:00:00:0B', FakePort(2)),
+    ])
+    dp1, dp2, dp3 = FakeDatapath(1), FakeDatapath(2), FakeDatapath(3)
+    c.datapaths = {1: dp1, 2: dp2, 3: dp3}
+    desc = types.SimpleNamespace(port_no=11, state=FakeProto.OFPPS_LINK_DOWN)
+    msg = types.SimpleNamespace(datapath=dp1, reason=FakeProto.OFPPR_MODIFY,
+                                desc=desc)
+    c.port_status_handler(types.SimpleNamespace(msg=msg))
+    assert not c.topology.has_edge(1, 2)
+    assert nx.shortest_path(c.topology, 1, 2) == [1, 3, 2]
+    assert (1, '00:00:00:00:00:0A', '00:00:00:00:00:0B') in c.installed_flows
