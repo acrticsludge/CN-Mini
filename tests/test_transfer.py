@@ -296,6 +296,28 @@ class TestFileTransfer:
         with open(os.path.join(storage, name), 'rb') as f:
             assert f.read() == content
 
+    def test_resume_shorter_file_truncates_old_tail(self, server):
+        """A resume over a longer stored file must not keep the old tail."""
+        from client.client import BackupClient
+        _, port, storage = server
+        name = 'shorter.bin'
+        new = b'N' * CHUNK_SIZE + b'Y' * CHUNK_SIZE
+        with open(os.path.join(storage, name), 'wb') as f:
+            f.write(b'N' * CHUNK_SIZE + b'X' * (CHUNK_SIZE * 2))
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello(name, len(new), resume_from=1))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 1
+            chunk = new[CHUNK_SIZE:]
+            client.sock.sendall(pack_data(1, 2, chunk, compute_crc32(chunk)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 1
+        finally:
+            client.close()
+        with open(os.path.join(storage, name), 'rb') as f:
+            assert f.read() == new
+
     def test_empty_file_completes(self, server):
         from client.client import BackupClient
         _, port, storage = server

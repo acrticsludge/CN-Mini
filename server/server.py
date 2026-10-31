@@ -98,6 +98,12 @@ class ClientHandler(threading.Thread):
             self.file_handle.close()
             self.file_handle = None
             self._report_stored()
+        elif accepted == self.total_chunks:
+            # The stored copy already covers the whole file. Drop any old tail.
+            self.file_handle.truncate(self.file_size)
+            self.file_handle.close()
+            self.file_handle = None
+            self._report_stored()
 
     def _handle_data(self, frame):
         """Process DATA: verify CRC32, write at the chunk's index, send ACK."""
@@ -122,6 +128,8 @@ class ClientHandler(threading.Thread):
         self.received.add(index)
         self.send_ack(index)
         if len(self.received) >= self.total_chunks:
+            # A resume can sit on a longer old file; cut the stale tail.
+            self.file_handle.truncate(self.file_size)
             elapsed = time.time() - self._start_time
             print(f"[SERVER] Transfer complete: {self.filename} "
                   f"({len(self.received)} chunks in {elapsed:.2f}s)")
