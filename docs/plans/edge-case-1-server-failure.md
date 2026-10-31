@@ -23,7 +23,9 @@ The plan follows the existing link-failure pattern: one control path, one state 
 | 2 | Manual or automatic restart? | Manual. No timer, no auto-restart. |
 | 3 | Retry wait? | Two probes, 5 seconds apart, then confirm. This replaces the spec's 30 s wait. |
 | 4 | Metrics panel? | Reuse "Recovery Time" with a kind label. Label link cases and server cases separately. |
-| 5 | Show the active server? | Yes, in the topology: border highlight on the active server, darken on failure, highlight h4 and the route on failover. |
+| 5 | Show the active server? | Yes, in the topology: blue border on the active server, grey disabled state on failure, h4 and the route highlighted on failover. |
+| 6 | Partial-file policy? | Write `<filename>.part`, promote only on completion, and hide `.part` from `/api/files`. |
+| 7 | Topology layout? | Center the drawing with the SVG viewBox; keep the route visible while a server is down. |
 
 ### Assumptions to confirm before coding
 
@@ -90,22 +92,24 @@ Tasks 1 and 2 are inseparable. Task 3 is unsafe without them.
 
 ### Task 1: Server writes chunks by index
 
-**Description.** Change the server from a sequential file position to an index-based write. Track received chunk indices in a set. Accept a resume only when the partial file is long enough. Send the accepted start in the ready ACK. Handle the empty file.
+**Description.** Change the server from a sequential file position to an index-based write. Track received chunk indices in a set. Accept a resume only when the `.part` file is long enough. Send the accepted start in the ready ACK. Write to `<filename>.part` and promote it only when the file is complete. Handle the empty file.
 
 **Acceptance criteria.**
 
-- [ ] `_handle_data` seeks to `frame['index'] * CHUNK_SIZE`, writes, flushes, adds the index to `received`, and ACKs that index.
+- [ ] `_handle_data` seeks to `frame['index'] * CHUNK_SIZE`, writes, flushes, and adds the index to `received`.
 - [ ] A duplicate index ACKs again without writing a second copy.
 - [ ] An out-of-order index writes at its own offset.
-- [ ] `_handle_hello` sends `ACK(accepted_start)`: the requested resume when the partial file is long enough, otherwise 0.
-- [ ] A 0-byte file gets a ready ACK, closes the file, and prints `[STORED]`.
+- [ ] `_handle_hello` sends `ACK(accepted_start)`: the requested resume when the `.part` file is long enough, otherwise 0.
+- [ ] A 0-byte file is promoted and `[STORED]` prints before the ready ACK.
+- [ ] The final chunk promotes `.part` with `os.replace` before the final ACK.
 - [ ] `[STORED]` prints once, when every index is present.
 - [ ] An index outside `0..total-1` is dropped.
+- [ ] `/api/files` hides `.part`, so an interrupted copy is not listed as a backup.
 
 **Verification.**
 
 ```bash
-python -m pytest tests/test_transfer.py tests/test_server_resume.py -q
+python -m pytest tests/test_transfer.py tests/test_recovery.py -q
 ```
 
 **Dependencies.** Task 0.
@@ -113,7 +117,8 @@ python -m pytest tests/test_transfer.py tests/test_server_resume.py -q
 **Files.**
 
 - `server/server.py`
-- `tests/test_server_resume.py` (new)
+- `tests/test_transfer.py`
+- `tests/test_recovery.py`
 
 **Size.** M.
 
@@ -329,8 +334,10 @@ Manual: click each button with h3 and h4 selected; confirm the event text and th
 
 **Acceptance criteria.**
 
-- [ ] The active server gets `.host.active-server` with a visible border.
-- [ ] A down server gets `.host.down`, loses `.active-server`, and pulses red.
+- [ ] The active server gets `.host.active-server` with a blue border.
+- [ ] A down server gets `.host.down`, loses `.active-server`, and turns grey/dim with no pulse.
+- [ ] The route to a down server stays visible, dimmed and dashed.
+- [ ] On failover, h4 gets the blue active border and the h4 route.
 - [ ] A restarted server gets `.host.recovering` for 1.5 s, then returns to normal.
 - [ ] Unknown status gets `.host.unknown`, not `.down`.
 - [ ] `flowDest` follows `state.server`; failover switches the dots to h4.
@@ -389,7 +396,7 @@ Manual: click each button with h3 and h4 selected; confirm the event text and th
 - [ ] `node --check` passes.
 - [ ] Kill h3 during a transfer: h3 red, bar holds, retry text, retry ring.
 - [ ] Restart h3: h3 green flash, bar continues, event log `[RESUME]`.
-- [ ] Leave h3 down: h4 active, route highlight, bar resets, `[FAILOVER]`.
+- [ ] Leave h3 down: h4 active with the blue border, route highlight, bar moves after the first chunk, `[FAILOVER]`.
 - [ ] Refresh mid-retry: state rehydrates.
 - [ ] Second tab: same state within one poll.
 - [ ] Reduced motion: no pulses, text still explains.
@@ -498,13 +505,13 @@ New: `server-target`, `btn-server-down`, `btn-server-up`, `server-status-text`.
 
 Existing: `.host`, `.host.client`, `.host.server`, `.link`, `.link.down`, `.link.active`, `.flow-dot`, `.flow-dot.trail`, `#progress-bar.running`, `#progress-bar.done`, `#progress-bar.failed`, `#progress-bar.stopped`, `.event-entry.evt-recovery`, `.event-entry.evt-link`, `.event-entry.evt-done`, `.event-entry.evt-fail`, `barberpole`.
 
-New: `.host.active-server`, `.host.down`, `.host.recovering`, `.host.unknown`, `.retry-ring`, `.flow-dot.retry`, `#progress-bar.retrying`, `#progress-bar.failover`, `.evt-server`, `.evt-retry`, `.evt-resume`, `.evt-failover`.
+New: `.host.active-server`, `.host.down`, `.host.recovering`, `.host.unknown`, `.retry-ring`, `.flow-layer.retrying`, `#progress-bar.retrying`, `#progress-bar.failover`, `.evt-server`, `.evt-retry`, `.evt-resume`, `.evt-failover`.
 
 ### JavaScript functions and animation chain
 
 `updateProgress` renders the bar, text, metrics, and calls `renderFlow`. `renderFlow` uses `computeFlowPath`, `flowLayer`, `pointAlongPath`, `highlightFlowPath`, and `clearFlow`. `computeFlowPath` does BFS over `FLOW_MESH` from `FLOW_SRC` to `FLOW_DST`, skipping links with `.down`. `updateLinkStatus` toggles `.down` on a link. `flowDots` and `flowPathKey` cache the current route.
 
-New: `hostIsDown`, `updateHostStatus`, `updateActiveServer`, `flowDest`, `renderRetryRing`.
+New: `updateHostStatus`, `updateActiveServer`, `flowDest`, `renderRetryRing`. The route is not blocked by a down host.
 
 ### API routes
 

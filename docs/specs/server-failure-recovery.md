@@ -24,7 +24,7 @@ The dashboard makes this visible the same way link failure is visible today: a b
 
 ## 2. User story
 
-> During a backup to h3, the server dies. The dashboard turns h3 red, freezes the packet dots, and says "h3 unreachable, retrying 1/2". I restart h3. The transfer continues from chunk 40, h3 flashes green, and the file finishes with the same hash. If I leave h3 down, the bridge restarts the backup on h4 and says so.
+> During a backup to h3, the server dies. The dashboard dims h3 to grey, keeps the route visible with frozen dots, and says "h3 unreachable, retrying 1/2". I restart h3. The transfer continues from chunk 40, h3 flashes green, and the file finishes with the same hash. If I leave h3 down, the bridge restarts the backup on h4, h4 gets the blue active border, and the bar moves again.
 
 A second story covers the button:
 
@@ -112,7 +112,7 @@ The client reads the ready ACK payload and uses it as `start_chunk`, overriding 
 
 - `send_file`:
   - After the ready ACK, read `accepted_start = unpack_ack(ack_frame['payload'])` (or the existing `struct.unpack`). If it's a sane value between 0 and `total_chunks`, set `start_chunk = accepted_start`.
-  - If `resume_from` was requested but the server accepted 0, print `[CLIENT] Server has no partial file, restarting from 0`.
+  - If the server accepts a lower start than requested, print `[CLIENT] Server accepted resume from chunk {accepted_start}` and start there.
   - Keep the separate `RESUME` frame branch for compatibility. The bridge path doesn't use it; a fresh process has `last_ack = -1`.
 - `_send_chunks`:
   - On `sendall` failure, missing ACK, or a `recv_frame` timeout, print `[RESUME_POINT]` with `last_ack` and `next_chunk = last_ack + 1`.
@@ -125,21 +125,23 @@ The client reads the ready ACK payload and uses it as `start_chunk`, overriding 
 
 The server must write each chunk at its own index, not at the current file position. Without this, a retry after a lost ACK writes the same data at the next offset and corrupts the file.
 
+The server writes to `<filename>.part` and promotes it with `os.replace` to `<filename>` only after the final chunk. A crash leaves the previous final copy untouched, and `/api/files` skips `.part` so an interrupted transfer is not listed as a stored backup. The promotion happens before the final ACK, so a client that sees the ACK also sees the final file.
+
 - `ClientHandler`:
   - Replace `received_chunks` count with `self.received = set()`.
   - `_handle_hello`:
     - Compute `total_chunks`.
     - Determine `accepted_start` as above.
-    - Open the file `r+b` when resuming, `wb` otherwise.
+    - Open `part_path` `r+b` when resuming, `wb` otherwise.
     - If resuming, `received = set(range(accepted_start))`. The client's resume point is trusted for the prefix.
     - Send `pack_ack(accepted_start)`, not `pack_ack(0)`.
-    - If `file_size == 0`, close the file and print `[STORED]` after the ACK. There are no chunks to receive.
+    - If `file_size == 0`, promote the empty part and print `[STORED]` before the ready ACK.
   - `_handle_data`:
     - If `frame['index'] >= total_chunks`, drop it (bad index).
     - If `frame['index'] in self.received`, send `ACK(index)` and return. This makes a retry after a lost ACK idempotent.
     - Verify CRC. On mismatch, drop without an ACK, as today.
-    - Seek to `index * CHUNK_SIZE`, write, flush, add to `received`, send `ACK(index)`.
-    - Complete when `len(self.received) >= total_chunks`, then print `[STORED]`.
+    - Seek to `index * CHUNK_SIZE`, write, flush, add to `received`.
+    - On the final chunk, truncate to `file_size`, close, `os.replace(part_path, output_path)`, print `[STORED]`, then send `ACK(index)`.
   - `_handle_resume`: keep it. If the bridge ever sends a `RESUME` frame, set `accepted_start = last_ack + 1`, seek, and `received = set(range(accepted_start))`; ACK `last_ack`.
 - `BackupServer`: no change.
 
@@ -191,6 +193,7 @@ attempt 2:
     "retry_wait_s": 4.2
   }
   ```
+- Every `[PROGRESS]` write carries `phase: "running"`, `attempt`, `max_attempts`, `resume_from`, and `server`. The transient `retrying`/`resuming`/`failover` phase is written before the attempt starts; the first chunk switches it to `running` so the bar moves and the topology keeps the right server.
 - Cancel: check `transfer_cancel.json` every 0.5 s during the wait. Write terminal progress with `cancelled: true`, `phase: "stopped"`, and return `stopped`. Do not start a new client.
 - Terminal progress: keep the last `chunk`, `total`, `throughput`, `server`, and `resume_from`, as `_write_terminal_progress` does today.
 - Result additions: `attempts`, `resumed_from`, `server`, `restarted_on_backup`, `downtime_s`.
@@ -299,19 +302,20 @@ Add two buttons to the Transfer Control panel, next to the link buttons:
 - Both buttons stay enabled. The API is idempotent and returns "already down" or "already up".
 - A second tab sees the change on its next `/api/status` poll (2 s).
 
-Optional: a small `h3 / h4` selector. v1 fixes h3 because that is where the demo sends files.
+The control group has a native `h3 / h4` selector; h3 is the default. Both buttons read the selected host at click time.
 
 ### 6.2 Topology states
 
 The SVG already has `#host-h1` … `#host-h4` and `#link-s1-s2` … `#link-s3-s4`. Add host classes:
 
-| State           | Class                          | Visual                                             |
-| --------------- | ------------------------------ | -------------------------------------------------- |
-| Serving         | none (existing)                | Red stroke for servers, green for clients          |
-| Down            | `.host.down`                   | Red fill, pulsing stroke, no flow dots on the path |
-| Recovering      | `.host.recovering`             | Green flash for 1.5 s, then back to normal         |
-| Failover target | `.host.recovering` then normal | h4 flashes when it starts receiving                |
-| Unknown         | `.host.unknown`                | Dim stroke; status file stale or missing           |
+| State              | Class                          | Visual                                                        |
+| ------------------ | ------------------------------ | ------------------------------------------------------------- |
+| Serving, inactive  | none (existing)                | Red stroke for servers, green for clients                     |
+| Active destination | `.host.active-server`          | Blue stroke (#4ea8de) and glow; follows `state.server`        |
+| Down               | `.host.down`                   | Grey, dim, dashed, no pulse; the route stays visible          |
+| Recovering         | `.host.recovering`             | Green flash for 1.5 s, then the active blue if it is the target |
+| Failover target    | `.host.recovering` + active    | h4 flashes, then keeps the blue active border                 |
+| Unknown            | `.host.unknown`                | Dim grey; status file stale or missing                        |
 
 Map the status payload to the class: `alive === true` becomes `up`, `alive === false` becomes `down`, and `alive === null` or missing becomes `unknown`.
 
@@ -321,10 +325,14 @@ Map the status payload to the class: `alive === true` becomes `up`, `alive === f
 function updateHostStatus(host, status) {
   const el = document.getElementById("host-" + host);
   if (!el) return;
+  const wasDown = el.classList.contains("down") || el.classList.contains("unknown");
   el.classList.remove("down", "recovering", "unknown");
-  if (status === "down") el.classList.add("down");
-  if (status === "unknown") el.classList.add("unknown");
-  if (status === "up") {
+  if (status === "down") {
+    el.classList.remove("active-server");
+    el.classList.add("down");
+  } else if (status === "unknown") {
+    el.classList.add("unknown");
+  } else if (status === "up" && wasDown) {
     el.classList.add("recovering");
     setTimeout(() => el.classList.remove("recovering"), 1500);
   }
@@ -337,8 +345,8 @@ The current animation is progress-driven. `renderFlow(state)` uses `chunks_sent 
 
 - Replace `const FLOW_DST = 'h3'` with `let flowDest = 'h3'`.
 - `renderFlow(state)` sets `flowDest = state.server === 'h4' ? 'h4' : 'h3'` when `state.server` is present.
-- `computeFlowPath` returns `null` when the source or destination host is down. Add `hostIsDown(name)` that checks `#host-<name>.down`.
-- When `phase === 'retrying'`, don't call `clearFlow`. Keep the last path and the dots at the last fraction, add `retry` to the flow layer, and add a pulsing ring around the destination host. The dots freeze because `chunks_sent` doesn't change. If the page was just refreshed, there are no dots to keep; the ring and the progress text still show the state.
+- Do not block the route when the destination host is down. The host node shows the disabled state; the path stays visible so the viewer can see which server failed.
+- When `phase === 'retrying'`, keep the path and the dots at the last fraction, add `retrying` to the flow layer, and add a pulsing ring around the destination host. The dots freeze because `chunks_sent` doesn't change. If the page was just refreshed, compute the path and draw the dots at the current fraction; the ring and the progress text show the state.
   ```js
   const p = FLOW_NODES[flowDest];
   const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -347,8 +355,9 @@ The current animation is progress-driven. `renderFlow(state)` uses `chunks_sent 
   ring.setAttribute("cy", p.y);
   ring.setAttribute("r", 34);
   ```
-- When `phase === 'failover'`, set `flowDest = 'h4'`, clear the dots, and recompute the path. The dots restart at fraction 0 on the h4 route (h1 → s1 → s3 → s4 → h4 or h1 → s1 → s4 → h4, whichever BFS finds). Add `failover` to the flow layer.
+- When `phase === 'failover'`, set `flowDest = 'h4'`, clear the dots, and recompute the path. The dots restart at fraction 0 on the h4 route (h1 → s1 → s3 → s4 → h4 or h1 → s1 → s4 → h4, whichever BFS finds). The first progress line switches the phase to `running`, so the bar moves.
 - When the transfer resumes on h3, `phase === 'resuming'`, the path recomputes to h3 and the dots continue at the current fraction. The jump back to the h3 path is the visible recovery.
+- The active server gets the blue `.host.active-server` border; on failover it moves to h4.
 - On `done` / `failed` / `stopped`, clear the flow as today.
 
 Honesty note: the path is computed from the link classes on screen, not from the controller. The real path may differ. The existing code already says this; keep the comment.
@@ -362,12 +371,12 @@ Honesty note: the path is computed from the link classes on screen, not from the
 | `running`  | `Transferring big.bin: 31.2%`                                | `.running`, width = progress               |
 | `retrying` | `h3 unreachable, retrying 1/2 (chunk 40/128)`                | `.running .retrying`, width stays at 31.2% |
 | `resuming` | `Resuming at chunk 40/128`                                   | `.running .resuming`, width stays          |
-| `failover` | `Restarting on backup server h4`                             | `.running .failover`, width 0              |
+| `failover` | `Restarting on backup server h4 — sent/total`; the first chunk switches to `Transferring ...` | `.running .failover`, width follows progress |
 | `done`     | `Idle — last transfer ... completed ...`                     | reset to 0, as today                       |
 | `failed`   | `Idle — last transfer ... failed (server h3 did not return)` | reset                                      |
 | `stopped`  | `Idle — transfer ... stopped by user`                        | reset                                      |
 
-The progress bar must not drop to 0 during `retrying` or `resuming`. That would look like the backup restarted when it didn't.
+The progress bar must not drop to 0 during `retrying` or `resuming`. That would look like the backup restarted when it didn't. On failover it does start from 0, but the first `[PROGRESS]` line switches the phase to `running`, so the bar moves as chunks arrive.
 
 ### 6.5 Event log
 
@@ -397,7 +406,7 @@ Lines the bridge writes:
 ### 6.6 Accessibility
 
 - Add `aria-live="polite"` to `#progress-text` and a visually hidden `#server-status-text` that says "Server h3 down" / "Server h3 back".
-- The red/green host states must not be the only signal. The event log and the progress text carry the same information.
+- The blue/grey/green host states must not be the only signal. The event log and the progress text carry the same information.
 - `@media (prefers-reduced-motion: reduce)` disables the host pulse, the green flash, and the barber-pole animation. The state text remains.
 - Buttons keep visible focus outlines.
 
@@ -406,10 +415,16 @@ Lines the bridge writes:
 Add to `style.css`:
 
 ```css
+.host.active-server {
+  stroke: #4ea8de;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 6px rgba(78, 168, 222, 0.85));
+}
 .host.down {
-  stroke: #e94560;
-  fill: #3a1a2e;
-  animation: host-pulse-red 1.2s ease-in-out infinite;
+  stroke: #555;
+  fill: #111;
+  opacity: 0.45;
+  stroke-dasharray: 2, 3;
 }
 .host.recovering {
   stroke: #7bf1c3;
@@ -417,7 +432,16 @@ Add to `style.css`:
 }
 .host.unknown {
   stroke: #666;
-  opacity: 0.6;
+  opacity: 0.5;
+}
+.flow-layer.retrying .flow-dot {
+  fill: #f0a500;
+  opacity: 0.35;
+}
+.flow-layer.retrying .link.active {
+  stroke: #f0a500;
+  stroke-width: 2;
+  stroke-dasharray: 4, 4;
 }
 .retry-ring {
   fill: none;
@@ -425,9 +449,6 @@ Add to `style.css`:
   stroke-width: 2;
   stroke-dasharray: 4, 4;
   animation: retry-spin 1.2s linear infinite;
-}
-.flow-dot.retry {
-  fill: #f0a500;
 }
 #progress-bar.retrying {
   background-image: repeating-linear-gradient(
@@ -463,15 +484,6 @@ Add to `style.css`:
   padding-left: 0.4rem;
 }
 
-@keyframes host-pulse-red {
-  0%,
-  100% {
-    stroke-opacity: 1;
-  }
-  50% {
-    stroke-opacity: 0.3;
-  }
-}
 @keyframes host-flash-green {
   0%,
   100% {
@@ -611,10 +623,10 @@ Browser POST /api/server-down
 
 1. Put a 50–100 MB file in `shared_files/`.
 2. Start the transfer. Wait for about 30%.
-3. Press **Kill Server h3**. The host turns red, the bar holds, the log says retrying.
+3. Press **Kill Server h3**. The host dims to grey, the route stays visible, the bar holds, the log says retrying.
 4. Wait 3-5 s, press **Restart h3**. The host flashes green, the bar continues from the same chunk, the log says `[RESUME]`.
 5. When it finishes, run `sha256sum shared_files/<file> stored_files/h3/<file>`. They match.
-6. Repeat, but leave h3 down. After the two probes, 5 s apart, the run restarts on h4 and completes. The log says `[FAILOVER]`.
+6. Repeat, but leave h3 down. After the two probes, 5 s apart, the run restarts on h4, h4 gets the blue border, the bar moves, and the file completes. The log says `[FAILOVER]`.
 
 ---
 
@@ -623,9 +635,11 @@ Browser POST /api/server-down
 - [ ] Killing h3 at any chunk and restarting it before the second probe completes the same file.
 - [ ] The resumed run sends only chunks from `next_chunk` onward.
 - [ ] A lost ACK never duplicates or corrupts a chunk.
-- [ ] The dashboard shows h3 red, "retrying 1/2", and a frozen bar during the wait.
+- [ ] The dashboard dims h3 to grey, keeps the route visible, and shows "retrying 1/2" with a held bar.
 - [ ] Restarting h3 flashes it green and continues the bar from the same percentage.
-- [ ] If h3 stays down, the run restarts on h4 and says so.
+- [ ] The active destination has a blue border; it moves to h4 on failover.
+- [ ] If h3 stays down, the run restarts on h4, the bar moves again, and the run says so.
+- [ ] The h3 partial is hidden as `.part` and does not appear in Stored Files.
 - [ ] A cancel during the retry stops the run and starts no new client.
 - [ ] A page refresh during the retry shows the same phase, attempt, server, and chunk.
 - [ ] A second tab sees the same state within one poll.
@@ -644,7 +658,7 @@ Browser POST /api/server-down
 - **Retry budget.** The 5 s probe gap plus two client attempts must fit the demo. A 1 GB file may exceed the 300 s per-attempt deadline; the existing docs already say the big file is slow.
 - **Status file staleness.** If `topology.py` dies, `server_status.json` goes stale. Treat older than 10 s as unknown, not down.
 - **Animation is illustrative.** The flow path is computed from the link classes on screen, not from the controller. The real path may be via s3 or s4. Keep the existing honesty comment.
-- **Case 3 interaction.** If the temp-file change from `edge-cases.md` case 3 lands first, resume must target the `.part` file. If it lands later, this spec works on the final filename. Pick one before implementation.
+- **Partial files.** In-progress copies are `<filename>.part` and `/api/files` hides them. Stale `.part` files from abandoned runs stay on disk until cleaned; they are not listed as backups. Temp plus rename can nearly double the space during a transfer.
 
 ---
 
