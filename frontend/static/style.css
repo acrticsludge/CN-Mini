@@ -108,6 +108,21 @@ main {
     stroke-dasharray: 5,5;
 }
 
+/* Packet-flow animation (JS-driven visualization, not measured data). */
+.link.active {
+    stroke: #7bf1c3;
+    stroke-width: 3.5;
+}
+
+.flow-dot {
+    fill: #4ecca3;
+    opacity: 0.95;
+}
+
+.flow-dot.trail {
+    opacity: 0.45;
+}
+
 /* Buttons */
 .button-group {
     display: flex;

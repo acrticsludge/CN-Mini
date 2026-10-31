@@ -114,6 +114,9 @@ document.getElementById('btn-link-down').addEventListener('click', async () => {
     });
     const result = await response.json();
     addEvent(`Link failure: ${result.sw1} <-> ${result.sw2}`);
+    if (result.applied) {
+        updateLinkStatus(result.sw1, result.sw2, 'down');
+    }
 });
 
 document.getElementById('btn-link-up').addEventListener('click', async () => {
@@ -124,6 +127,9 @@ document.getElementById('btn-link-up').addEventListener('click', async () => {
     });
     const result = await response.json();
     addEvent(`Link restored: ${result.sw1} <-> ${result.sw2}`);
+    if (result.applied) {
+        updateLinkStatus(result.sw1, result.sw2, 'up');
+    }
 });
 
 document.getElementById('btn-refresh-files').addEventListener('click', loadFiles);
@@ -195,6 +201,7 @@ function updateProgress(state) {
     }
     chunks.textContent = `${sent} / ${total}`;
     throughput.textContent = `${tput.toFixed(1)} KB/s`;
+    renderFlow(state);
 
     // Update chart (skipped when the chart library failed to load)
     throughputData.push(tput);
@@ -207,8 +214,10 @@ function updateProgress(state) {
 }
 
 function updateLinkStatus(sw1, sw2, status) {
-    const linkId = `link-${sw1}-${sw2}`;
-    const link = document.getElementById(linkId);
+    // Link elements are stored in dashboard.html order (link-s1-s2); events
+    // may name the pair either way round, so try both.
+    const link = document.getElementById(`link-${sw1}-${sw2}`)
+        || document.getElementById(`link-${sw2}-${sw1}`);
     if (link) {
         if (status === 'down') {
             link.classList.add('down');
@@ -216,6 +225,159 @@ function updateLinkStatus(sw1, sw2, status) {
             link.classList.remove('down');
         }
     }
+}
+
+// Packet-flow animation on the topology SVG. Visualization only: it mirrors
+// the network state shown on this page, it does not observe real packets.
+// Model mirrors dashboard.html (viewBox centers, access links, 6-link mesh).
+const FLOW_NODES = {
+    h1: { x: 90, y: 75 }, h2: { x: 90, y: 275 },
+    h3: { x: 560, y: 75 }, h4: { x: 560, y: 275 },
+    s1: { x: 240, y: 75 }, s2: { x: 440, y: 75 },
+    s3: { x: 240, y: 275 }, s4: { x: 440, y: 275 },
+};
+const FLOW_ACCESS = { h1: 's1', h2: 's3', h3: 's2', h4: 's4' };
+const FLOW_MESH = [['s1', 's2'], ['s1', 's3'], ['s1', 's4'],
+                   ['s2', 's3'], ['s2', 's4'], ['s3', 's4']];
+// Transfers originate on h1 (the bridge lives there) toward the primary
+// server h3. The result payload does not name the receiving server, so h3 is
+// a documented assumption, not a measured fact.
+const FLOW_SRC = 'h1';
+const FLOW_DST = 'h3';
+let flowDots = [];
+let flowPathKey = '';
+
+function linkElement(a, b) {
+    return document.getElementById(`link-${a}-${b}`)
+        || document.getElementById(`link-${b}-${a}`);
+}
+
+function linkIsDown(a, b) {
+    const el = linkElement(a, b);
+    return el ? el.classList.contains('down') : false;
+}
+
+function computeFlowPath(srcHost, dstHost) {
+    // BFS: host -> its switch -> mesh (skipping down links) ->
+    // destination switch -> host. Same shape of answer as the controller's
+    // Dijkstra, computed from the same link state shown on screen.
+    const srcSw = FLOW_ACCESS[srcHost];
+    const dstSw = FLOW_ACCESS[dstHost];
+    if (!srcSw || !dstSw) return null;
+    if (linkIsDown(srcHost, srcSw) || linkIsDown(dstSw, dstHost)) return null;
+    const prev = { [srcSw]: null };
+    const queue = [srcSw];
+    while (queue.length) {
+        const cur = queue.shift();
+        if (cur === dstSw) break;
+        for (const [a, b] of FLOW_MESH) {
+            const nxt = (a === cur) ? b : (b === cur) ? a : null;
+            if (nxt === null || (nxt in prev) || linkIsDown(cur, nxt)) continue;
+            prev[nxt] = cur;
+            queue.push(nxt);
+        }
+    }
+    if (!(dstSw in prev)) return null;
+    const switches = [];
+    for (let n = dstSw; n !== null; n = prev[n]) switches.unshift(n);
+    return [srcHost, ...switches, dstHost];
+}
+
+function flowLayer() {
+    const svg = document.getElementById('topology-svg');
+    if (!svg) return null;
+    let g = document.getElementById('flow-layer');
+    if (!g) {
+        g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        g.setAttribute('id', 'flow-layer');
+        svg.appendChild(g);
+    }
+    return g;
+}
+
+function pointAlongPath(nodes, frac) {
+    const pts = nodes.map(n => FLOW_NODES[n]);
+    const segLens = [];
+    let total = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const len = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+        segLens.push(len);
+        total += len;
+    }
+    if (total === 0) return pts[0];
+    let target = Math.min(Math.max(frac, 0), 1) * total;
+    for (let i = 0; i < segLens.length; i++) {
+        if (target <= segLens[i]) {
+            const t = segLens[i] === 0 ? 0 : target / segLens[i];
+            return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
+                     y: pts[i].y + (pts[i + 1].y - pts[i].y) * t };
+        }
+        target -= segLens[i];
+    }
+    return pts[pts.length - 1];
+}
+
+function clearFlow() {
+    const g = document.getElementById('flow-layer');
+    if (g) g.innerHTML = '';
+    flowDots = [];
+    flowPathKey = '';
+    document.querySelectorAll('#topology-svg .link.active').forEach(el => {
+        el.classList.remove('active');
+    });
+}
+
+function highlightFlowPath(nodes) {
+    document.querySelectorAll('#topology-svg .link.active').forEach(el => {
+        el.classList.remove('active');
+    });
+    for (let i = 0; i < nodes.length - 1; i++) {
+        const el = linkElement(nodes[i], nodes[i + 1]);
+        if (el) el.classList.add('active');
+    }
+}
+
+function renderFlow(state) {
+    // Dots ride the progress fraction, so the motion is honest: stalled
+    // progress means still dots. A mid-transfer reroute recomputes the path
+    // and the dots continue at the same fraction on the new route — the jump
+    // *is* the reroute made visible.
+    const total = Number(state.total_chunks) || 0;
+    if (!state.running || total <= 0) {
+        clearFlow();
+        return;
+    }
+    const nodes = computeFlowPath(FLOW_SRC, FLOW_DST);
+    if (!nodes) {
+        clearFlow();
+        return;
+    }
+    const key = nodes.join('>');
+    const g = flowLayer();
+    if (!g) return;
+    if (key !== flowPathKey || flowDots.length === 0) {
+        g.innerHTML = '';
+        flowDots = [];
+        const specs = [{ r: 5, cls: 'flow-dot' },
+                       { r: 3.5, cls: 'flow-dot trail' },
+                       { r: 2.5, cls: 'flow-dot trail' }];
+        for (const s of specs) {
+            const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            c.setAttribute('r', s.r);
+            c.setAttribute('class', s.cls);
+            g.appendChild(c);
+            flowDots.push(c);
+        }
+        flowPathKey = key;
+        highlightFlowPath(nodes);
+    }
+    const frac = (Number(state.chunks_sent) || 0) / total;
+    const offsets = [0, 0.04, 0.08];
+    flowDots.forEach((dot, i) => {
+        const p = pointAlongPath(nodes, frac - offsets[i]);
+        dot.setAttribute('cx', p.x.toFixed(1));
+        dot.setAttribute('cy', p.y.toFixed(1));
+    });
 }
 
 async function loadFiles() {
