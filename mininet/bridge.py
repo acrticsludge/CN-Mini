@@ -169,14 +169,14 @@ def _write_terminal_progress(filename, request_id, running=False, cancelled=Fals
     if phase:
         entry['phase'] = phase
     if last:
-        for key in ('chunk', 'total', 'throughput', 'bytes'):
+        for key in ('chunk', 'total', 'throughput', 'bytes', 'server'):
             if key in last:
                 entry[key] = last[key]
     _write_json(PROGRESS_FILE, entry)
 
 
 def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
-               phase='running'):
+               attempt=1):
     """Run one client attempt. Returns a dict for the retry loop.
 
     Terminal progress is written by process_request, not here: an attempt that
@@ -213,8 +213,13 @@ def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
                     result.update({'chunk': p.get('chunk', 0),
                                    'total': p.get('total', 0),
                                    'throughput': p.get('throughput', 0.0)})
-                    p.update({'filename': filename, 'request_id': request_id,
-                              'running': True, 'phase': phase})
+                    p.update({
+                        'filename': filename, 'request_id': request_id,
+                        'running': True, 'phase': 'running',
+                        'attempt': attempt, 'max_attempts': 2,
+                        'resume_from': resume_from,
+                        'server': result.get('server') or server_name(servers[0]),
+                    })
                     _write_json(PROGRESS_FILE, p)
                 except Exception:
                     pass
@@ -381,7 +386,7 @@ def process_request(request):
         _write_retry_progress(filename, request_id, first, 'resuming', 2,
                               resume_from, server)
         second = run_client(filename, filepath, request_id, servers=[addr],
-                            resume_from=resume_from, phase='resuming')
+                            resume_from=resume_from, attempt=2)
         second['attempts'] = 2
         second['resumed_from'] = resume_from
         second['server'] = server
@@ -404,7 +409,7 @@ def process_request(request):
     _write_retry_progress(filename, request_id, first, 'failover', 2, 0,
                           backup_name)
     second = run_client(filename, filepath, request_id, servers=[backup],
-                        resume_from=0, phase='failover')
+                        resume_from=0, attempt=2)
     second['attempts'] = 2
     second['resumed_from'] = 0
     second['server'] = backup_name
