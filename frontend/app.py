@@ -514,10 +514,11 @@ def _request_server(host, action):
     try:
         os.makedirs(SHARED_DIR, exist_ok=True)
         request_id = f'{int(time.time() * 1000)}-{os.getpid()}'
-        with open(SERVER_REQUEST_FILE, 'w') as f:
-            json.dump({'host': host, 'action': action,
-                       'request_id': request_id,
-                       'requested_at': time.time()}, f)
+        _write_json_atomic(SERVER_REQUEST_FILE, {
+            'host': host, 'action': action,
+            'request_id': request_id,
+            'requested_at': time.time(),
+        })
     except Exception as e:
         return jsonify({'error': f'Could not write server request: {e}'}), 500
 
