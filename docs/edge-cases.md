@@ -32,6 +32,8 @@ Those four facts explain most of the gaps below.
 
 ## 1. Server dies mid-transfer
 
+The full design, including the dashboard button and topology animation, is in [specs/server-failure-recovery.md](specs/server-failure-recovery.md).
+
 **Scenario.** h3 goes down at chunk 40 of 128. The half file is in `stored_files/h3/`, because `/tmp/backup` is bind-mounted there.
 
 **Today.** The client records `last_ack = 39`, prints `[CLIENT] No ACK received...`, and exits 1. This happens quickly when the server process dies; if the host blackholes, it waits out the 60 s window first. The bridge reports failed and stops. The partial file survives, but a new Start truncates it (case 3). No retry happens.
