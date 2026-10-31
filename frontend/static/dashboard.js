@@ -216,8 +216,7 @@ function updateProgress(state) {
         text.textContent = `Resuming at chunk ${sent}/${total}`;
         bar.className = 'running resuming';
     } else if (phase === 'failover') {
-        text.textContent = `Restarting on backup server ${state.server || 'h4'}`;
-        bar.style.width = '0%';
+        text.textContent = `Restarting on backup server ${state.server || 'h4'} — ${sent}/${total}`;
         bar.className = 'running failover';
     } else if (state.running) {
         text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
@@ -362,11 +361,6 @@ function linkIsDown(a, b) {
     return el ? el.classList.contains('down') : false;
 }
 
-function hostIsDown(name) {
-    const el = document.getElementById('host-' + name);
-    return el ? el.classList.contains('down') : false;
-}
-
 function computeFlowPath(srcHost, dstHost) {
     // BFS: host -> its switch -> mesh (skipping down links) ->
     // destination switch -> host. Same shape of answer as the controller's
@@ -374,7 +368,6 @@ function computeFlowPath(srcHost, dstHost) {
     const srcSw = FLOW_ACCESS[srcHost];
     const dstSw = FLOW_ACCESS[dstHost];
     if (!srcSw || !dstSw) return null;
-    if (hostIsDown(srcHost) || hostIsDown(dstHost)) return null;
     if (linkIsDown(srcHost, srcSw) || linkIsDown(dstSw, dstHost)) return null;
     const prev = { [srcSw]: null };
     const queue = [srcSw];
@@ -430,7 +423,10 @@ function pointAlongPath(nodes, frac) {
 
 function clearFlow() {
     const g = document.getElementById('flow-layer');
-    if (g) g.innerHTML = '';
+    if (g) {
+        g.innerHTML = '';
+        g.classList.remove('retrying');
+    }
     flowDots = [];
     flowPathKey = '';
     document.querySelectorAll('#topology-svg .link.active').forEach(el => {
@@ -464,20 +460,17 @@ function renderFlow(state) {
         renderRetryRing(null);
         return;
     }
-    if (phase === 'retrying') {
-        // Keep the last dots frozen at the last fraction; the ring shows why.
-        renderRetryRing(flowDest);
-        return;
-    }
-    renderRetryRing(null);
+    const retrying = phase === 'retrying';
     const nodes = computeFlowPath(FLOW_SRC, flowDest);
     if (!nodes) {
         clearFlow();
+        renderRetryRing(null);
         return;
     }
     const key = nodes.join('>');
     const g = flowLayer();
     if (!g) return;
+    g.classList.toggle('retrying', retrying);
     if (key !== flowPathKey || flowDots.length === 0) {
         g.innerHTML = '';
         flowDots = [];
@@ -501,6 +494,7 @@ function renderFlow(state) {
         dot.setAttribute('cx', p.x.toFixed(1));
         dot.setAttribute('cy', p.y.toFixed(1));
     });
+    renderRetryRing(retrying ? flowDest : null);
 }
 
 async function loadFiles() {

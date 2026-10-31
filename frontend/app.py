@@ -231,18 +231,29 @@ def _sync_transfer_state():
         if (progress.get('phase') == 'retrying'
                 and transfer_state.get('server_down_at') is None):
             transfer_state['server_down_at'] = time.time()
+            transfer_state['recovery_target'] = (
+                transfer_state.get('recovery_target') or progress.get('server'))
         if (progress.get('chunk', 0) > prev_chunks
                 and transfer_state.get('server_down_at') is not None
                 and transfer_state.get('recovery_time') is None):
             dt = time.time() - transfer_state['server_down_at']
             if dt >= RECOVERY_STRAGGLER_GRACE:
+                target = (transfer_state.get('recovery_target')
+                          or progress.get('server') or transfer_state.get('server'))
+                current = (progress.get('server') or transfer_state.get('server')
+                           or target)
                 transfer_state['recovery_time'] = round(dt, 1)
                 transfer_state['recovery_kind'] = 'server'
-                transfer_state['recovery_target'] = transfer_state.get('server')
                 transfer_state['server_down_at'] = None
-                log_event(f"[RECOVERY] Server {transfer_state.get('server')} back "
-                          f"after {dt:.1f}s; resumed at chunk "
-                          f"{progress.get('chunk', 0)}/{total}")
+                if current != target:
+                    transfer_state['recovery_target'] = f'{target}->{current}'
+                    log_event(f"[RECOVERY] {target} did not return; {current} "
+                              f"took over after {dt:.1f}s "
+                              f"(chunk {progress.get('chunk', 0)}/{total})")
+                else:
+                    transfer_state['recovery_target'] = target
+                    log_event(f"[RECOVERY] Server {target} back after {dt:.1f}s; "
+                              f"resumed at chunk {progress.get('chunk', 0)}/{total}")
         if not progress.get('running') and not progress.get('cancelled'):
             transfer_state['progress'] = 100
 
@@ -312,7 +323,9 @@ def list_files():
         if os.path.exists(path):
             files[server] = [
                 {'name': f, 'size': os.path.getsize(os.path.join(path, f))}
-                for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))
+                for f in os.listdir(path)
+                if os.path.isfile(os.path.join(path, f))
+                and not f.endswith('.part')
             ]
         else:
             files[server] = []
@@ -538,6 +551,7 @@ def _request_server(host, action):
         if state == 'down' and transfer_state.get('running'):
             transfer_state['server_down_at'] = time.time()
             transfer_state['recovery_time'] = None
+            transfer_state['recovery_target'] = host
         log_event(f"[SERVER] {host} {state} confirmed")
         socketio.emit('server_event', {'host': host, 'status': state})
         return jsonify({'status': state, 'host': host, 'applied': True})

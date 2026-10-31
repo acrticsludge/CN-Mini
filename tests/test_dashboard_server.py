@@ -38,6 +38,9 @@ def dash(tmp_path):
     mod.SERVER_REQUEST_FILE = os.path.join(shared, 'server_request.json')
     mod.SERVER_RESULT_FILE = os.path.join(shared, 'server_result.json')
     mod.SERVER_STATUS_FILE = os.path.join(shared, 'server_status.json')
+    mod.STORED_DIR = str(tmp_path / 'stored')
+    for server in ('h3', 'h4'):
+        os.makedirs(os.path.join(mod.STORED_DIR, server), exist_ok=True)
     mod.transfer_state.update({
         'running': False, 'filename': None, 'request_id': None, 'progress': 0,
         'chunks_sent': 0, 'total_chunks': 0, 'throughput': 0.0,
@@ -137,6 +140,27 @@ def test_server_recovery_is_labeled(dash):
     assert any('[RECOVERY] Server h3' in e for e in dash.event_log)
 
 
+def test_server_failover_recovery_is_labeled(dash):
+    dash.transfer_state.update({'filename': 'a.bin', 'request_id': 'r1',
+                                'running': True, 'start_time': time.time()})
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': 'r1', 'running': True,
+                   'chunk': 2, 'total': 4, 'throughput': 0.0,
+                   'phase': 'retrying', 'attempt': 1, 'max_attempts': 2,
+                   'resume_from': 2, 'server': 'h3'}, f)
+    dash.app.test_client().get('/api/status')
+    dash.transfer_state['server_down_at'] = time.time() - 5
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'request_id': 'r1', 'running': True,
+                   'chunk': 3, 'total': 4, 'throughput': 1.0,
+                   'phase': 'running', 'attempt': 2, 'max_attempts': 2,
+                   'resume_from': 0, 'server': 'h4'}, f)
+    state = dash.app.test_client().get('/api/status').get_json()['transfer']
+    assert state['recovery_kind'] == 'server'
+    assert state['recovery_target'] == 'h3->h4'
+    assert any('h4 took over' in e for e in dash.event_log)
+
+
 def test_metrics_expose_recovery_kind(dash):
     dash.transfer_state.update({'recovery_time': 3.2, 'recovery_kind': 'server',
                                 'recovery_target': 'h3'})
@@ -144,3 +168,15 @@ def test_metrics_expose_recovery_kind(dash):
     assert data['recovery_time'] == 3.2
     assert data['recovery_kind'] == 'server'
     assert data['recovery_target'] == 'h3'
+
+
+def test_files_hides_partial_copies(dash):
+    folder = os.path.join(dash.STORED_DIR, 'h3')
+    with open(os.path.join(folder, 'a.bin'), 'wb') as f:
+        f.write(b'x')
+    with open(os.path.join(folder, 'a.bin.part'), 'wb') as f:
+        f.write(b'x')
+    data = dash.app.test_client().get('/api/files').get_json()
+    names = [entry['name'] for entry in data['h3']]
+    assert 'a.bin' in names
+    assert 'a.bin.part' not in names

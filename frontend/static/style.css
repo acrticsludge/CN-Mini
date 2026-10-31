@@ -88,15 +88,16 @@ main {
 }
 
 .host.active-server {
-    stroke: #7bf1c3;
+    stroke: #4ea8de;
     stroke-width: 4;
-    filter: drop-shadow(0 0 6px rgba(123, 241, 195, 0.8));
+    filter: drop-shadow(0 0 6px rgba(78, 168, 222, 0.85));
 }
 
 .host.down {
-    stroke: #e94560;
-    fill: #3a1a2e;
-    animation: host-pulse-red 1.2s ease-in-out infinite;
+    stroke: #555;
+    fill: #111;
+    opacity: 0.45;
+    stroke-dasharray: 2, 3;
 }
 
 .host.recovering {
@@ -106,7 +107,18 @@ main {
 
 .host.unknown {
     stroke: #666;
-    opacity: 0.6;
+    opacity: 0.5;
+}
+
+.flow-layer.retrying .flow-dot {
+    fill: #f0a500;
+    opacity: 0.35;
+}
+
+.flow-layer.retrying .link.active {
+    stroke: #f0a500;
+    stroke-width: 2;
+    stroke-dasharray: 4, 4;
 }
 
 .retry-ring {
@@ -389,11 +401,6 @@ main {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
-}
-
-@keyframes host-pulse-red {
-    0%, 100% { stroke-opacity: 1; }
-    50% { stroke-opacity: 0.3; }
 }
 
 @keyframes host-flash-green {
