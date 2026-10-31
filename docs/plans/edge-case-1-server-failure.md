@@ -77,7 +77,7 @@ Tasks 1 and 2 are inseparable. Task 3 is unsafe without them.
 - [ ] Every side-channel file has a producer and a consumer.
 - [ ] Every event marker and its CSS class is listed.
 - [ ] Every new or changed user-facing string has a source file and an owner.
-- [ ] The animation chain is written down, including where progress drives the dots.
+- [ ] The animation chain is written down, including how the dashed path is built from link endpoints and when the dash animation runs.
 - [ ] No code changes in this task.
 
 **Verification.** Compare the appendix with `dashboard.html`, `dashboard.js`, `style.css`, `frontend/app.py`, `mininet/bridge.py`, and `mininet/serverctl.py` (when it exists). Fix the appendix before starting Task 1.
@@ -340,9 +340,9 @@ Manual: click each button with h3 and h4 selected; confirm the event text and th
 - [ ] On failover, h4 gets the blue active border and the h4 route.
 - [ ] A restarted server gets `.host.recovering` for 1.5 s, then returns to normal.
 - [ ] Unknown status gets `.host.unknown`, not `.down`.
-- [ ] `flowDest` follows `state.server`; failover switches the dots to h4.
-- [ ] The retry phase keeps the last dots and adds a retry ring at the destination.
-- [ ] The failover phase clears the dots and highlights the h4 route.
+- [ ] `flowDest` follows `state.server`; failover switches the dashed path to h4.
+- [ ] The retry phase keeps the dashed route, pauses the dashes, and adds a retry ring at the destination.
+- [ ] The failover phase rebuilds the route and highlights h4.
 - [ ] The resume phase recomputes the h3 route and continues at the current fraction.
 - [ ] The existing link-failure animation still works.
 - [ ] Reduced motion disables the pulse, flash, and ring spin.
@@ -503,13 +503,13 @@ New: `server-target`, `btn-server-down`, `btn-server-up`, `server-status-text`.
 
 ### CSS classes
 
-Existing: `.host`, `.host.client`, `.host.server`, `.link`, `.link.down`, `.link.active`, `.flow-dot`, `.flow-dot.trail`, `#progress-bar.running`, `#progress-bar.done`, `#progress-bar.failed`, `#progress-bar.stopped`, `.event-entry.evt-recovery`, `.event-entry.evt-link`, `.event-entry.evt-done`, `.event-entry.evt-fail`, `barberpole`.
+Existing: `.host`, `.host.client`, `.host.server`, `.link`, `.link.down`, `.link.active`, `.flow-line`, `#progress-bar.running`, `#progress-bar.done`, `#progress-bar.failed`, `#progress-bar.stopped`, `.event-entry.evt-recovery`, `.event-entry.evt-link`, `.event-entry.evt-done`, `.event-entry.evt-fail`, `barberpole`.
 
 New: `.host.active-server`, `.host.down`, `.host.recovering`, `.host.unknown`, `.retry-ring`, `.flow-layer.retrying`, `#progress-bar.retrying`, `#progress-bar.failover`, `.evt-server`, `.evt-retry`, `.evt-resume`, `.evt-failover`.
 
 ### JavaScript functions and animation chain
 
-`updateProgress` renders the bar, text, metrics, and calls `renderFlow`. `renderFlow` uses `computeFlowPath`, `flowLayer`, `pointAlongPath`, `highlightFlowPath`, and `clearFlow`. `computeFlowPath` does BFS over `FLOW_MESH` from `FLOW_SRC` to `FLOW_DST`, skipping links with `.down`. `updateLinkStatus` toggles `.down` on a link. `flowDots` and `flowPathKey` cache the current route.
+`updateProgress` renders the bar, text, metrics, and calls `renderFlow`. `renderFlow` uses `computeFlowPath`, `flowSegments`, `flowLayer`, `highlightFlowPath`, and `clearFlow`. `computeFlowPath` does BFS over `FLOW_MESH` from `FLOW_SRC` to `FLOW_DST`, skipping links with `.down`. `updateLinkStatus` toggles `.down` on a link. `flowPathKey` caches the current route.
 
 New: `updateHostStatus`, `updateActiveServer`, `flowDest`, `renderRetryRing`. The route is not blocked by a down host.
 

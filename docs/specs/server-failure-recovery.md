@@ -24,7 +24,7 @@ The dashboard makes this visible the same way link failure is visible today: a b
 
 ## 2. User story
 
-> During a backup to h3, the server dies. The dashboard dims h3 to grey, keeps the route visible with frozen dots, and says "h3 unreachable, retrying 1/2". I restart h3. The transfer continues from chunk 40, h3 flashes green, and the file finishes with the same hash. If I leave h3 down, the bridge restarts the backup on h4, h4 gets the blue active border, and the bar moves again.
+> During a backup to h3, the server dies. The dashboard dims h3 to grey, keeps the route visible as a paused dotted line, and says "h3 unreachable, retrying 1/2". I restart h3. The transfer continues from chunk 40, h3 flashes green, and the file finishes with the same hash. If I leave h3 down, the bridge restarts the backup on h4, h4 gets the blue active border, the dotted line follows the h4 route, and the bar moves again.
 
 A second story covers the button:
 
@@ -346,7 +346,8 @@ The current animation is progress-driven. `renderFlow(state)` uses `chunks_sent 
 - Replace `const FLOW_DST = 'h3'` with `let flowDest = 'h3'`.
 - `renderFlow(state)` sets `flowDest = state.server === 'h4' ? 'h4' : 'h3'` when `state.server` is present.
 - Do not block the route when the destination host is down. The host node shows the disabled state; the path stays visible so the viewer can see which server failed.
-- When `phase === 'retrying'`, keep the path and the dots at the last fraction, add `retrying` to the flow layer, and add a pulsing ring around the destination host. The dots freeze because `chunks_sent` doesn't change. If the page was just refreshed, compute the path and draw the dots at the current fraction; the ring and the progress text show the state.
+- Draw one dashed `<path id="flow-line">` from the actual link endpoints, oriented from source to destination. Each link becomes a `M … L …` subpath, so the line follows the visible link rather than drifting center-to-center on diagonals. Animate `stroke-dashoffset` with `flow-dash` so the dashes move in the data direction.
+- When `phase === 'retrying'`, keep the dashed path, add `retrying` to the flow layer, pause the dash animation, and add a pulsing ring around the destination host. If the page was just refreshed, draw the path; the ring and the progress text show the state.
   ```js
   const p = FLOW_NODES[flowDest];
   const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
@@ -355,8 +356,8 @@ The current animation is progress-driven. `renderFlow(state)` uses `chunks_sent 
   ring.setAttribute("cy", p.y);
   ring.setAttribute("r", 34);
   ```
-- When `phase === 'failover'`, set `flowDest = 'h4'`, clear the dots, and recompute the path. The dots restart at fraction 0 on the h4 route (h1 → s1 → s3 → s4 → h4 or h1 → s1 → s4 → h4, whichever BFS finds). The first progress line switches the phase to `running`, so the bar moves.
-- When the transfer resumes on h3, `phase === 'resuming'`, the path recomputes to h3 and the dots continue at the current fraction. The jump back to the h3 path is the visible recovery.
+- When `phase === 'failover'`, set `flowDest = 'h4'`, rebuild the dashed route, and let the dashes run. The first progress line switches the phase to `running`, so the bar moves.
+- When the transfer resumes on h3, `phase === 'resuming'`, the route rebuilds to h3 and the dashes run again. The jump back to the h3 route is the visible recovery.
 - The active server gets the blue `.host.active-server` border; on failover it moves to h4.
 - On `done` / `failed` / `stopped`, clear the flow as today.
 
@@ -434,9 +435,18 @@ Add to `style.css`:
   stroke: #666;
   opacity: 0.5;
 }
-.flow-layer.retrying .flow-dot {
-  fill: #f0a500;
-  opacity: 0.35;
+.flow-line {
+  fill: none;
+  stroke: #4ecca3;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 2 8;
+  animation: flow-dash 0.8s linear infinite;
+}
+.flow-layer.retrying .flow-line {
+  stroke: #f0a500;
+  opacity: 0.45;
+  animation-play-state: paused;
 }
 .flow-layer.retrying .link.active {
   stroke: #f0a500;
@@ -493,6 +503,11 @@ Add to `style.css`:
     stroke: #4ecca3;
   }
 }
+@keyframes flow-dash {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
 @keyframes retry-spin {
   to {
     stroke-dashoffset: -16;
@@ -502,6 +517,7 @@ Add to `style.css`:
   .host.down,
   .host.recovering,
   .retry-ring,
+  .flow-line,
   #progress-bar.retrying {
     animation: none;
   }
