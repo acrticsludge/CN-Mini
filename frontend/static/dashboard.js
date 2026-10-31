@@ -396,6 +396,25 @@ function flowLayer() {
         g.setAttribute('class', 'flow-layer');
         svg.appendChild(g);
     }
+    if (!document.getElementById('flow-defs')) {
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const defs = document.createElementNS(svgNS, 'defs');
+        defs.setAttribute('id', 'flow-defs');
+        const m = document.createElementNS(svgNS, 'marker');
+        m.setAttribute('id', 'flow-arrow');
+        m.setAttribute('markerWidth', '10');
+        m.setAttribute('markerHeight', '10');
+        m.setAttribute('refX', '9');
+        m.setAttribute('refY', '3');
+        m.setAttribute('orient', 'auto');
+        m.setAttribute('markerUnits', 'strokeWidth');
+        const p = document.createElementNS(svgNS, 'path');
+        p.setAttribute('d', 'M0,0 L0,6 L9,3 z');
+        p.setAttribute('fill', '#f0a500');
+        m.appendChild(p);
+        defs.appendChild(m);
+        svg.insertBefore(defs, svg.firstChild);
+    }
     return g;
 }
 
@@ -477,6 +496,7 @@ function renderFlow(state) {
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('id', 'flow-line');
         path.setAttribute('class', 'flow-line');
+        path.setAttribute('marker-end', 'url(#flow-arrow)');
         path.setAttribute('d', flowSegments(nodes));
         g.appendChild(path);
         highlightFlowPath(nodes);

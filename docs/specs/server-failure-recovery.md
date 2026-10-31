@@ -346,7 +346,7 @@ The current animation is progress-driven. `renderFlow(state)` uses `chunks_sent 
 - Replace `const FLOW_DST = 'h3'` with `let flowDest = 'h3'`.
 - `renderFlow(state)` sets `flowDest = state.server === 'h4' ? 'h4' : 'h3'` when `state.server` is present.
 - Do not block the route when the destination host is down. The host node shows the disabled state; the path stays visible so the viewer can see which server failed.
-- Draw one dashed `<path id="flow-line">` from the actual link endpoints, oriented from source to destination. Each link becomes a `M … L …` subpath, so the line follows the visible link rather than drifting center-to-center on diagonals. Animate `stroke-dashoffset` with `flow-dash` so the dashes move in the data direction.
+- Draw one dashed `<path id="flow-line">` from the actual link endpoints, oriented from source to destination. Each link becomes a `M … L …` subpath, so the line follows the visible link rather than drifting center-to-center on diagonals. An amber arrowhead (`marker-end`) sits at the end of every segment, and `stroke-dashoffset` animates with `flow-dash` so the dashes move in the data direction.
 - When `phase === 'retrying'`, keep the dashed path, add `retrying` to the flow layer, pause the dash animation, and add a pulsing ring around the destination host. If the page was just refreshed, draw the path; the ring and the progress text show the state.
   ```js
   const p = FLOW_NODES[flowDest];

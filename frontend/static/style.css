@@ -159,11 +159,11 @@ main {
 
 .flow-line {
     fill: none;
-    stroke: #4ecca3;
-    stroke-width: 3;
+    stroke: #f0a500;
+    stroke-width: 4;
     stroke-linecap: round;
-    stroke-dasharray: 2 8;
-    animation: flow-dash 0.8s linear infinite;
+    stroke-dasharray: 6 8;
+    animation: flow-dash 1s linear infinite;
 }
 
 /* Buttons */
@@ -410,7 +410,7 @@ main {
 }
 
 @keyframes flow-dash {
-    to { stroke-dashoffset: -10; }
+    to { stroke-dashoffset: 14; }
 }
 
 @keyframes retry-spin {

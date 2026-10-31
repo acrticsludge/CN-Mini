@@ -77,7 +77,7 @@ Tasks 1 and 2 are inseparable. Task 3 is unsafe without them.
 - [ ] Every side-channel file has a producer and a consumer.
 - [ ] Every event marker and its CSS class is listed.
 - [ ] Every new or changed user-facing string has a source file and an owner.
-- [ ] The animation chain is written down, including how the dashed path is built from link endpoints and when the dash animation runs.
+- [ ] The animation chain is written down, including how the amber dashed path is built from link endpoints, the per-segment arrowhead, and when the dash animation runs.
 - [ ] No code changes in this task.
 
 **Verification.** Compare the appendix with `dashboard.html`, `dashboard.js`, `style.css`, `frontend/app.py`, `mininet/bridge.py`, and `mininet/serverctl.py` (when it exists). Fix the appendix before starting Task 1.
