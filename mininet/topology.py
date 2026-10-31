@@ -21,6 +21,7 @@ from mininet.cli import CLI
 from mininet.log import setLogLevel
 
 from linkctl import serve_link_requests
+from serverctl import HOST_IP, serve_server_requests, start_server
 
 
 def _run_topology():
@@ -121,16 +122,12 @@ def _run_topology():
     # h3 and h4 need the repo copied into their own namespaces.
     # Both listen on 9000: separate IPs, matching the client's default
     # --servers 10.0.0.3:9000 10.0.0.4:9000 so failover just works.
-    for host, ip in [('h3', '10.0.0.3'), ('h4', '10.0.0.4')]:
+    server_procs = {}
+    for host in ('h3', 'h4'):
         node = net.get(host)
         node.cmd(f'mkdir -p /tmp/src && cp -r {base_dir}/server {base_dir}/common /tmp/src/')
-        node.popen([sys.executable, '/tmp/src/server/server.py',
-                    '--host', ip, '--port', '9000',
-                    '--storage', '/tmp/backup'],
-                   stdout=open(f'/tmp/server_{host}.log', 'w'),
-                   stderr=subprocess.STDOUT,
-                   env=dict(os.environ, PYTHONUNBUFFERED='1'))
-        print(f'[TOPOLOGY] Backup server starting on {host} ({ip}:9000) '
+        server_procs[host] = start_server(net, host)
+        print(f'[TOPOLOGY] Backup server starting on {host} ({HOST_IP[host]}:9000) '
               f'-> /tmp/backup  [log: /tmp/server_{host}.log]')
 
     print('[TOPOLOGY] Bridge on h1 launched via popen() in h1 namespace')
@@ -147,9 +144,18 @@ def _run_topology():
     # requests so the dashboard can actually break the network.
     request_file = os.path.join(shared_dir, 'link_request.json')
     result_file = os.path.join(shared_dir, 'link_result.json')
-    for p in (request_file, result_file):
+    server_request = os.path.join(shared_dir, 'server_request.json')
+    server_result = os.path.join(shared_dir, 'server_result.json')
+    server_status = os.path.join(shared_dir, 'server_status.json')
+    for p in (request_file, result_file, server_request, server_result,
+              server_status):
         if os.path.exists(p):
             os.unlink(p)
+
+    threading.Thread(target=serve_server_requests,
+                     args=(net, server_procs, server_request, server_result,
+                           server_status),
+                     daemon=True).start()
 
     cli_thread = threading.Thread(target=CLI, args=(net,), daemon=True)
     cli_thread.start()
@@ -158,6 +164,9 @@ def _run_topology():
         serve_link_requests(net, request_file, result_file,
                             should_continue=lambda: cli_thread.is_alive())
     finally:
+        for proc in server_procs.values():
+            if proc.poll() is None:
+                proc.terminate()
         cli_thread.join(timeout=2)
         net.stop()
         print('[TOPOLOGY] Mininet stopped')
