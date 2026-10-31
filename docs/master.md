@@ -1,14 +1,14 @@
 # CN-Mini Master Document — Distributed Backup System
 
-*One doc, end to end: what the project is, what every part is and does, and
+_One doc, end to end: what the project is, what every part is and does, and
 how a file gets from a click to safe storage across a self-healing network.
 Systems-level — no function signatures; for per-file detail see
-`docs/codebase/`.*
+`docs/codebase/`._
 
 ## 1. What this is (and what problem it solves)
 
-A **client** is a machine that *sends* files for safekeeping. A **backup
-server** is a machine that *receives and stores* them. The problem: networks
+A **client** is a machine that _sends_ files for safekeeping. A **backup
+server** is a machine that _receives and stores_ them. The problem: networks
 corrupt data, connections drop halfway, and links die — any of which can
 silently destroy a backup. This project builds a small backup service where:
 
@@ -54,7 +54,7 @@ dashboard.
 - **zlib CRC32 — the integrity fingerprint.** CRC (Cyclic Redundancy Check) is
   a fast error-detecting code: feed it bytes, get a 32-bit number; one flipped
   bit gives a different number. Computed per 8 KB chunk — fast enough for
-  ~144,000 chunks per gigabyte, and it catches random corruption (it is *not*
+  ~144,000 chunks per gigabyte, and it catches random corruption (it is _not_
   security: a deliberate forger can fake it).
 - **pytest — the test runner.** 70+ tests cover the protocol, transfers,
   resume, controller rerouting, dashboard races, and a full local end-to-end
@@ -66,10 +66,10 @@ entire deployment.
 ## 3. System map — the parts and how they connect
 
 **Hosts** (virtual machines-with-an-IP inside Mininet):
-`h1 = 10.0.0.1` and `h2 = 10.0.0.2` are *clients* (they send files);
-`h3 = 10.0.0.3` and `h4 = 10.0.0.4` are *backup servers* (they receive and
+`h1 = 10.0.0.1` and `h2 = 10.0.0.2` are _clients_ (they send files);
+`h3 = 10.0.0.3` and `h4 = 10.0.0.4` are _backup servers_ (they receive and
 store). h1 also runs the **bridge**, a helper program that acts on the
-dashboard's behalf *inside* the virtual network.
+dashboard's behalf _inside_ the virtual network.
 
 **Switches** `s1–s4` forward packets between hosts according to flow rules.
 They talk to the controller on port 6633 (OpenFlow channel) and carry backup
@@ -91,9 +91,9 @@ Terminal 3: python frontend/app.py             → dashboard at localhost:5000
 ```
 
 **Bind mounts** are shared folders between the real machine and the virtual
-hosts (a *mount namespace* trick): `stored_files/h3|h4` appears inside h3/h4
+hosts (a _mount namespace_ trick): `stored_files/h3|h4` appears inside h3/h4
 as `/tmp/backup`, so received files land in the repo where the dashboard lists
-them; `shared_files/` appears on *all* hosts as `/tmp/shared`, carrying the
+them; `shared_files/` appears on _all_ hosts as `/tmp/shared`, carrying the
 JSON side-channel (requests, results, heartbeats) both ways. Without mounts,
 the dashboard (host namespace) and the hosts (Mininet namespaces) could not
 exchange a single byte.
@@ -132,8 +132,8 @@ one and a 2-hop path remains — that redundancy is the whole demo.
   WATCH PLANE — Flask dashboard :5000 (REST + JSON files, never packets)
 ```
 
-*Data plane* = the file bytes moving. *Control plane* = the decisions about
-*where* bytes go (flow rules pushed into switches). *Watch plane* = humans
+_Data plane_ = the file bytes moving. _Control plane_ = the decisions about
+_where_ bytes go (flow rules pushed into switches). _Watch plane_ = humans
 looking at it all. The planes never mix: the controller never sees file
 chunks, the dashboard never touches packets.
 
@@ -144,7 +144,7 @@ chunks, the dashboard never touches packets.
    and nothing is already running (a second request would overwrite the first
    mid-flight, so it gets a `409 already running` instead). It writes
    `transfer_request.json` carrying a unique `request_id` — an ID minted per
-   click so the eventual result can only ever settle *its own* run, never a
+   click so the eventual result can only ever settle _its own_ run, never a
    stale or duplicate one.
 2. **Bridge picks it up.** The bridge program on h1 polls the shared folder,
    consumes the request, marks progress "running", and spawns `client.py` as a
@@ -154,15 +154,15 @@ chunks, the dashboard never touches packets.
    "ready" → then one `DATA` chunk + CRC32 at a time, each answered by an
    app-level `ACK`. After the last chunk the client prints a `[COMPLETE]`
    tally (how many chunks the server acknowledged) and exits 0. Done requires
-   *both* the tally and exit 0 — exit code alone once certified failures as
+   _both_ the tally and exit 0 — exit code alone once certified failures as
    successes.
-4. **Server side.** Each chunk's CRC is recomputed *before* writing; a mismatch
+4. **Server side.** Each chunk's CRC is recomputed _before_ writing; a mismatch
    is dropped silently (no ACK), which the client reads as loss — corruption
    and loss share one code path. A complete file is flushed to `/tmp/backup`,
    i.e. into `stored_files/`.
 5. **Done, visibly.** The bridge writes `transfer_result.json` (same
    `request_id`); the dashboard's polls pick up the bar %, chunk counts,
-   throughput, and announce done/failed *with duration*. The Stop button drops
+   throughput, and announce done/failed _with duration_. The Stop button drops
    a cancel file the bridge honors by killing the client.
 
 ```
@@ -181,7 +181,7 @@ chunks, the dashboard never touches packets.
 
 1. **Break it.** Mininet takes s1–s2 down (dashboard button or CLI). The
    switches on both ends emit **port-status events** — "a port changed state"
-   messages — to Ryu. (This is why the dashboard breaks the *real* link
+   messages — to Ryu. (This is why the dashboard breaks the _real_ link
    instead of pretending: only a real event exercises the real chain.)
 2. **Reroute (seconds).** Ryu prunes the dead `(switch, port)` from its map —
    explicitly, because LLDP discovery still lists the corpse for seconds —
@@ -194,11 +194,10 @@ chunks, the dashboard never touches packets.
 4. **Stall, don't die.** The client stops getting ACKs but keeps waiting: the
    mid-transfer ACK window is 60 s (vs 10 s just to connect), so TCP
    retransmission rides out the blackhole and traffic resumes on the healed
-   path — *same run, zero rework*. The byte stream resumes exactly; the server
+   path — _same run, zero rework_. The byte stream resumes exactly; the server
    just sees delayed frames.
 5. **Proof on screen.** Dashboard logs `[LINK]` (amber) when Mininet confirms,
-   then a green headline `[RECOVERY] Traffic flowing again Xs after link
-   down` — measured from down-confirm to the next chunk advance, i.e. timed
+   then a green headline `[RECOVERY] Traffic flowing again Xs after link down` — measured from down-confirm to the next chunk advance, i.e. timed
    where traffic is actually observable — then `[DONE]` with totals. Recovery
    Time in Metrics finally shows a number.
 
@@ -218,8 +217,7 @@ entire contract is **plain JSON files**, each with one job:
 
 - `transfer_request.json` — dashboard → bridge: `{filename, request_id}`.
   The bridge deletes it on pickup (consumed exactly once).
-- `transfer_result.json` — bridge → dashboard: `{filename, request_id,
-  status, error?}`. Terminal states: `done / failed / stopped`.
+- `transfer_result.json` — bridge → dashboard: `{filename, request_id, status, error?}`. Terminal states: `done / failed / stopped`.
 - `transfer_progress.json` — bridge → dashboard, rewritten per chunk:
   `{filename, request_id, running, chunk, total, throughput}`. The bar reads
   `chunk/total`; `running: true` means "bridge busy".
@@ -251,7 +249,7 @@ entire contract is **plain JSON files**, each with one job:
 A 21-byte header plus up to 8 KB of file data. Every field earns its place:
 `magic` (`0xDEADBEEF`) rejects garbage/old versions at a glance; `type` says
 which of the four messages this is; `index`/`total` locate the chunk in the
-file (and drive the progress bar); `checksum` is the CRC32 of *this chunk's*
+file (and drive the progress bar); `checksum` is the CRC32 of _this chunk's_
 payload; `data_len` tells the receiver exactly where the frame ends (TCP is a
 stream — without lengths, messages blur together).
 
@@ -260,7 +258,7 @@ resume point); `DATA` carries one chunk; `ACK` confirms one chunk index (or
 readiness); `RESUME` restarts from the last good chunk after an interruption.
 
 Golden rule: **a TCP ACK means the kernel got bytes; our app ACK means the
-chunk passed CRC *and is on disk*** — only app ACKs drive resume and
+chunk passed CRC _and is on disk_** — only app ACKs drive resume and
 completion. Confusing the two is the classic viva trap.
 
 ```
@@ -277,10 +275,10 @@ completion. Confusing the two is the classic viva trap.
 - **8 KB chunks** — small enough that resuming wastes little, big enough that
   per-chunk ACKs don't drown the transfer. 1 MB = 128 frames; 1.1 GB ≈
   144,000 frames (read the exact total off the dashboard's chunk counter).
-- **Timeouts** — 10 s to *connect* (a truly dead server should fail fast),
-  60 s waiting for *ACKs mid-transfer* (must outlast STP reconvergence or
+- **Timeouts** — 10 s to _connect_ (a truly dead server should fail fast),
+  60 s waiting for _ACKs mid-transfer_ (must outlast STP reconvergence or
   every failure kills the run), 300 s bridge deadline (must cover a big file
-  *plus* one stall).
+  _plus_ one stall).
 - **Measured, small files (reported)** — 1.3 s recovery = 0.3 detect + 0.2
   recompute + 0.8 re-converge. Healthy speed ≈ 842 vs 850 KB/s dynamic vs
   static (effectively tied — the win is surviving failure, not speed).

@@ -7,3 +7,6 @@ __pycache__/
 # Runtime data — generated at run time, never committed
 shared_files/
 stored_files/
+
+#logs
+logs/
