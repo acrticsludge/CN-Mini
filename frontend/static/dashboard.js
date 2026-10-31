@@ -575,17 +575,24 @@ async function loadPartials() {
     try {
         const response = await fetch('/api/partial-files');
         const data = await response.json();
-        // Build a map: filename -> {server, chunks}
+        // Build a map keyed by filename AND server: map[name][server] = {chunks, partial_name}.
         const map = {};
         for (const server of ['h3', 'h4']) {
             for (const p of (data[server] || [])) {
-                map[p.name] = { server, chunks: p.chunks, partial_name: p.partial_name };
+                map[p.name] = map[p.name] || {};
+                map[p.name][server] = { chunks: p.chunks, partial_name: p.partial_name };
             }
         }
-        // If a file is selected and has a partial, remember it.
-        if (selectedFile && map[selectedFile]) {
-            pendingPartial = map[selectedFile];
-        } else if (!selectedFile || !map[selectedFile]) {
+        const selectedServer = document.getElementById('server-target').value;
+        // Only offer resume for the server the user has selected as the target.
+        if (selectedFile && map[selectedFile] && map[selectedFile][selectedServer]) {
+            pendingPartial = {
+                name: selectedFile,
+                chunks: map[selectedFile][selectedServer].chunks,
+                server: selectedServer,
+                partial_name: map[selectedFile][selectedServer].partial_name,
+            };
+        } else {
             pendingPartial = null;
         }
     } catch (e) {
@@ -604,6 +611,7 @@ loadFiles();
 loadBrowse();
 loadPartials();
 document.getElementById('btn-refresh-browse').addEventListener('click', loadBrowse);
+document.getElementById('server-target').addEventListener('change', loadPartials);
 async function pollOnce() {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();
