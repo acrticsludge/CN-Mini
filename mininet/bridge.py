@@ -46,6 +46,14 @@ CLIENT_TIMEOUT = float(os.environ.get('BRIDGE_TIMEOUT', '300'))
 # Per-ACK wait handed to the client: must cover STP reconvergence after a link
 # failure, or every mid-transfer failure becomes a failed run instead of a stall.
 TRANSFER_TIMEOUT = os.environ.get('BRIDGE_TRANSFER_TIMEOUT', '60')
+# Two probes, five seconds apart, before a failure is confirmed.
+PROBE_INTERVAL = float(os.environ.get('SERVER_PROBE_INTERVAL', '5'))
+SERVER_NAMES = {'10.0.0.3': 'h3', '10.0.0.4': 'h4'}
+
+
+def server_name(addr):
+    host = (addr or '').split(':', 1)[0]
+    return SERVER_NAMES.get(host, host or '')
 
 # Set once in main(); lets run_client heartbeat without plumbing args through.
 _started_at = None
@@ -143,7 +151,7 @@ def clear_transfer_files():
 
 
 def _write_terminal_progress(filename, request_id, running=False, cancelled=False,
-                             last=None):
+                             last=None, phase=None):
     """Mark the progress file terminal so a later transfer is not blocked.
 
     The dashboard treats a progress file with running=True as "bridge busy".
@@ -157,6 +165,8 @@ def _write_terminal_progress(filename, request_id, running=False, cancelled=Fals
     """
     entry = {'filename': filename, 'request_id': request_id,
              'running': running, 'cancelled': cancelled}
+    if phase:
+        entry['phase'] = phase
     if last:
         for key in ('chunk', 'total', 'throughput', 'bytes'):
             if key in last:
@@ -164,10 +174,18 @@ def _write_terminal_progress(filename, request_id, running=False, cancelled=Fals
     _write_json(PROGRESS_FILE, entry)
 
 
-def run_client(filename, filepath, request_id=None):
-    """Run the client, streaming progress. Returns (status, error)."""
-    cmd = ([sys.executable, CLIENT_SCRIPT, filepath, '--servers'] + SERVERS
+def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
+               phase='running'):
+    """Run one client attempt. Returns a dict for the retry loop.
+
+    Terminal progress is written by process_request, not here: an attempt that
+    fails and is retried must not mark the run finished.
+    """
+    servers = servers or SERVERS
+    cmd = ([sys.executable, CLIENT_SCRIPT, filepath, '--servers'] + servers
            + ['--transfer-timeout', TRANSFER_TIMEOUT])
+    if resume_from > 0:
+        cmd += ['--resume', str(resume_from)]
     print(f"[BRIDGE] Running: {' '.join(cmd)}", flush=True)
     emit_event(f'Client started on h1 for {filename}')
 
@@ -175,9 +193,12 @@ def run_client(filename, filepath, request_id=None):
                             text=True, bufsize=1)
     completed = False
     last_error = None
-    last_progress = {}
     last_hb = 0
     deadline = time.time() + CLIENT_TIMEOUT
+    result = {'filename': filename, 'request_id': request_id,
+              'status': 'failed', 'error': None, 'resume_point': None,
+              'server': server_name(servers[0]), 'server_addr': servers[0],
+              'chunk': 0, 'total': 0, 'throughput': 0.0}
 
     try:
         for line in proc.stdout:
@@ -188,16 +209,28 @@ def run_client(filename, filepath, request_id=None):
             if line.startswith('[PROGRESS]'):
                 try:
                     p = json.loads(line[len('[PROGRESS]'):].strip())
-                    last_progress = {k: p.get(k, 0) for k in
-                                     ('chunk', 'total', 'throughput', 'bytes')}
+                    result.update({'chunk': p.get('chunk', 0),
+                                   'total': p.get('total', 0),
+                                   'throughput': p.get('throughput', 0.0)})
                     p.update({'filename': filename, 'request_id': request_id,
-                              'running': True})
+                              'running': True, 'phase': phase})
                     _write_json(PROGRESS_FILE, p)
+                except Exception:
+                    pass
+            elif line.startswith('[RESUME_POINT]'):
+                try:
+                    rp = json.loads(line[len('[RESUME_POINT]'):].strip())
+                    nxt = int(rp.get('next_chunk', -1))
+                    result['resume_point'] = nxt if nxt >= 0 else None
+                    result['chunk'] = int(rp.get('last_ack', -1)) + 1
+                    result['total'] = int(rp.get('total', 0)) or result['total']
+                    addr = rp.get('server') or result['server_addr']
+                    result['server_addr'] = addr
+                    result['server'] = server_name(addr)
                 except Exception:
                     pass
             elif line.startswith('[COMPLETE]'):
                 completed = True
-                # The client's final tally — the count of chunks the server ACKed.
                 try:
                     done = json.loads(line[len('[COMPLETE]'):].strip())
                     emit_event(f"Server ACKed {done.get('chunks')} chunks "
@@ -205,11 +238,11 @@ def run_client(filename, filepath, request_id=None):
                 except Exception:
                     pass
             elif line.startswith('[CLIENT]') and not line.startswith('[CLIENT] Progress'):
-                # Stage changes only. Progress lines are carried by transfer_progress.json;
-                # emitting them as events buries the events that actually matter.
-                # Keep the last failure line so the dashboard can show why it failed
-                # instead of an opaque "client exited 1".
                 emit_event(line)
+                if 'Connected to ' in line:
+                    addr = line.split('Connected to ', 1)[1].strip()
+                    result['server_addr'] = addr
+                    result['server'] = server_name(addr)
                 if 'fail' in line.lower() or 'error' in line.lower() or 'lost' in line.lower():
                     last_error = line
             if os.path.exists(CANCEL_FILE):
@@ -234,32 +267,62 @@ def run_client(filename, filepath, request_id=None):
 
     if os.path.exists(CANCEL_FILE):
         os.unlink(CANCEL_FILE)
-        _write_terminal_progress(filename, request_id, running=False,
-                                 cancelled=True, last=last_progress)
-        return 'stopped', 'Cancelled by user'
+        result.update({'status': 'stopped', 'error': 'Cancelled by user',
+                       'resume_point': None})
+        return result
 
     if proc.returncode == 0 and completed:
-        # Exit code 0 alone is not proof: a client that never connected still
-        # exits 0, and reporting that as "done" is how a failed transfer was
-        # previously shown as a success. Require the [COMPLETE] tally too.
-        # (Note: there is deliberately no [STORED] check here. The server
-        # prints [STORED], but the bridge only sees the *client's* stdout, so
-        # waiting for it would hang every transfer. The per-chunk ACK tally in
-        # [COMPLETE] is the client-side receipt; the Stored Files panel is the
-        # server-side proof.)
-        _write_terminal_progress(filename, request_id, running=False,
-                                 last=last_progress)
         emit_event(f'Client finished {filename}')
-        return 'done', None
+        result.update({'status': 'done', 'error': None})
+        return result
 
     reason = last_error or (f'client exited {proc.returncode}'
                             if proc.returncode != 0
                             else 'client exited without completing a transfer')
     if not reason.startswith('[CLIENT]'):
         reason = f'[CLIENT] {reason}'
-    _write_terminal_progress(filename, request_id, running=False,
-                             last=last_progress)
-    return 'failed', reason[:300]
+    result.update({'status': 'failed', 'error': reason[:300]})
+    return result
+
+
+def _can_connect(addr, timeout=1):
+    try:
+        host, port = addr.rsplit(':', 1)
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _sleep_cancel(seconds, request_id):
+    end = time.time() + seconds
+    while time.time() < end:
+        if os.path.exists(CANCEL_FILE):
+            return False
+        time.sleep(min(0.5, max(0, end - time.time())))
+    return True
+
+
+def _wait_for_server(addr, request_id):
+    """Two probes, PROBE_INTERVAL apart. Returns 'up', 'down', or 'cancelled'."""
+    name = server_name(addr)
+    for i in (1, 2):
+        emit_event(f'[RETRY] Polling {name} ({i}/2)')
+        if _can_connect(addr):
+            return 'up'
+        if i == 1 and not _sleep_cancel(PROBE_INTERVAL, request_id):
+            return 'cancelled'
+    return 'down'
+
+
+def _write_retry_progress(filename, request_id, result, phase, attempt,
+                          resume_from, server):
+    _write_json(PROGRESS_FILE, {
+        'filename': filename, 'request_id': request_id, 'running': True,
+        'chunk': result.get('chunk', 0), 'total': result.get('total', 0),
+        'throughput': 0.0, 'phase': phase, 'attempt': attempt,
+        'max_attempts': 2, 'resume_from': resume_from, 'server': server,
+    })
 
 
 def process_request(request):
@@ -281,17 +344,74 @@ def process_request(request):
     # line — otherwise a click in that window looks idle and clobbers this run.
     _write_json(PROGRESS_FILE, {'filename': filename, 'request_id': request_id,
                                 'running': True, 'chunk': 0, 'total': 0,
-                                'throughput': 0.0})
+                                'throughput': 0.0, 'phase': 'running',
+                                'attempt': 1, 'max_attempts': 2,
+                                'resume_from': 0,
+                                'server': server_name(SERVERS[0])})
     try:
-        status, error = run_client(filename, filepath, request_id)
+        first = run_client(filename, filepath, request_id)
     except Exception as e:
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': str(e)}
 
-    result = {'filename': filename, 'request_id': request_id, 'status': status}
-    if error:
-        result['error'] = error
-    return result
+    first['attempts'] = 1
+    if first['status'] != 'failed' or first.get('resume_point') is None:
+        _write_terminal_progress(filename, request_id, last=first,
+                                 phase=first['status'])
+        return first
+
+    fail_at = time.time()
+    server = first.get('server') or server_name(SERVERS[0])
+    addr = first.get('server_addr') or SERVERS[0]
+    resume_from = first['resume_point']
+    _write_retry_progress(filename, request_id, first, 'retrying', 1,
+                          resume_from, server)
+    status = _wait_for_server(addr, request_id)
+
+    if status == 'cancelled':
+        _write_terminal_progress(filename, request_id, cancelled=True, last=first,
+                                 phase='stopped')
+        first.update({'status': 'stopped', 'error': 'Cancelled by user'})
+        return first
+
+    if status == 'up':
+        emit_event(f'[RESUME] {server} back; continuing at chunk '
+                   f'{resume_from}/{first.get("total", 0)}')
+        _write_retry_progress(filename, request_id, first, 'resuming', 2,
+                              resume_from, server)
+        second = run_client(filename, filepath, request_id, servers=[addr],
+                            resume_from=resume_from, phase='resuming')
+        second['attempts'] = 2
+        second['resumed_from'] = resume_from
+        second['server'] = server
+        second['downtime_s'] = round(time.time() - fail_at, 1)
+        if second['status'] == 'stopped':
+            _write_terminal_progress(filename, request_id, cancelled=True,
+                                     last=second, phase='stopped')
+            return second
+        if second['status'] == 'done':
+            _write_terminal_progress(filename, request_id, last=second, phase='done')
+            return second
+        first = second  # same-server retry failed; fall through to h4
+
+    backup = SERVERS[-1]
+    if server == server_name(backup):
+        backup = SERVERS[0]
+    backup_name = server_name(backup)
+    emit_event(f'[FAILOVER] {server} down confirmed; restarting on '
+               f'{backup_name} from chunk 0')
+    _write_retry_progress(filename, request_id, first, 'failover', 2, 0,
+                          backup_name)
+    second = run_client(filename, filepath, request_id, servers=[backup],
+                        resume_from=0, phase='failover')
+    second['attempts'] = 2
+    second['resumed_from'] = 0
+    second['server'] = backup_name
+    second['restarted_on_backup'] = second['status'] == 'done'
+    second['downtime_s'] = round(time.time() - fail_at, 1)
+    _write_terminal_progress(filename, request_id, last=second,
+                             phase=second['status'])
+    return second
 
 
 def report_namespace():
