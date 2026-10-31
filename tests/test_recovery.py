@@ -3,6 +3,7 @@ Tests for interrupted-transfer recovery: kill client mid-transfer,
 restart with RESUME, file completes correctly.
 """
 
+import json
 import os
 import sys
 import time
@@ -169,6 +170,89 @@ class TestRecovery:
 
         assert all(results)
         assert len(results) == 3
+
+    def test_client_reports_resume_point_on_loss(self, capsys):
+        """A mid-transfer failure prints the next chunk for the bridge."""
+        from client.client import BackupClient
+        port = free_port()
+        content = b'L' * (CHUNK_SIZE * 2)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
+            f.write(content)
+            path = f.name
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        srv.settimeout(10)
+
+        def fake():
+            conn, _ = srv.accept()
+            try:
+                recv_frame(conn)
+                conn.sendall(pack_ack(0))
+                data = recv_frame(conn)
+                conn.sendall(pack_ack(data['index']))
+            finally:
+                conn.close()
+                srv.close()
+
+        t = threading.Thread(target=fake, daemon=True)
+        t.start()
+        try:
+            client = BackupClient([('127.0.0.1', port)], transfer_timeout=2)
+            assert client.send_file(path) is False
+            client.close()
+            out = capsys.readouterr().out
+            line = [ln for ln in out.splitlines()
+                    if ln.startswith('[RESUME_POINT]')][-1]
+            payload = json.loads(line.split(' ', 1)[1])
+            assert payload['next_chunk'] == 1
+        finally:
+            os.unlink(path)
+            t.join(timeout=5)
+
+    def test_client_honors_server_accepted_start(self):
+        """A server that cannot resume tells the client to start at 0."""
+        from client.client import BackupClient
+        port = free_port()
+        content = b'M' * (CHUNK_SIZE * 3)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.bin') as f:
+            f.write(content)
+            path = f.name
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        srv.settimeout(10)
+        seen = []
+
+        def fake():
+            conn, _ = srv.accept()
+            try:
+                recv_frame(conn)
+                conn.sendall(pack_ack(0))
+                while True:
+                    data = recv_frame(conn)
+                    if data is None:
+                        break
+                    seen.append(data['index'])
+                    conn.sendall(pack_ack(data['index']))
+            finally:
+                conn.close()
+                srv.close()
+
+        t = threading.Thread(target=fake, daemon=True)
+        t.start()
+        try:
+            client = BackupClient([('127.0.0.1', port)], transfer_timeout=5)
+            assert client.send_file(path, resume_from=2) is True
+            client.close()
+            assert seen == [0, 1, 2]
+        finally:
+            os.unlink(path)
+            t.join(timeout=5)
 
 
 class TestStallRecovery:

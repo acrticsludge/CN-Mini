@@ -13,7 +13,7 @@ import struct
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from common.protocol import (
     HEADER_SIZE, MSG_ACK, CHUNK_SIZE,
-    pack_frame, unpack_header, pack_hello, pack_data, pack_resume,
+    pack_frame, unpack_header, pack_hello, pack_data, pack_resume, unpack_ack,
 )
 from common.checksum import compute_crc32
 from common.transport import recv_all, recv_frame
@@ -72,26 +72,30 @@ class BackupClient:
         # the run at 10 s would waste everything the reroute was meant to save.
         self.sock.settimeout(self.transfer_timeout)
 
-        start_chunk = resume_from if resume_from > 0 else 0
-
         # Send HELLO. The resume offset tells the server to keep an existing
         # partial file; without it the server truncates (correct for a fresh
         # transfer, which is what resume_from=0 means).
-        hello = pack_hello(filename, file_size, resume_from=start_chunk)
+        hello = pack_hello(filename, file_size, resume_from=resume_from)
         try:
             self.sock.sendall(hello)
         except Exception as e:
             print(f"[CLIENT] Failed to send HELLO: {e}")
             return False
 
-        # Receive ready ACK
+        # The ready ACK carries the chunk the server will actually start at.
         ack_frame = recv_frame(self.sock)
         if ack_frame is None or ack_frame['type'] != MSG_ACK:
             print("[CLIENT] Did not receive ready ACK")
             return False
+        accepted_start = unpack_ack(ack_frame['payload'])
+        if accepted_start < 0 or accepted_start > total_chunks:
+            accepted_start = 0
+        if resume_from > 0 and accepted_start != resume_from:
+            print(f"[CLIENT] Server accepted resume from chunk {accepted_start}")
 
-        # If resuming, send RESUME first
-        if resume_from > 0 and self.last_ack >= 0:
+        # If resuming, send RESUME first. Only when the server agreed to the
+        # same point; otherwise the client starts at the server's offset.
+        if resume_from > 0 and accepted_start == resume_from and self.last_ack >= 0:
             resume_frame = pack_resume(self.last_ack)
             self.sock.sendall(resume_frame)
             ack_frame = recv_frame(self.sock)
@@ -100,8 +104,9 @@ class BackupClient:
                 return False
             print(f"[CLIENT] Resuming from chunk {self.last_ack + 1}")
 
-        start_chunk = resume_from if resume_from > 0 else 0
-        return self._send_chunks(filepath, start_chunk, total_chunks)
+        if accepted_start > 0 and self.last_ack < accepted_start - 1:
+            self.last_ack = accepted_start - 1
+        return self._send_chunks(filepath, accepted_start, total_chunks)
 
     def _send_chunks(self, filepath, start_chunk, total_chunks):
         """Send file chunks from start_chunk to total_chunks. Returns True on success."""
@@ -123,6 +128,7 @@ class BackupClient:
                 except Exception as e:
                     print(f"[CLIENT] Connection lost at chunk {chunk_index}: {e}")
                     self.last_ack = chunk_index - 1
+                    self._report_resume_point(total_chunks)
                     return False
 
                 # Wait for ACK
@@ -130,6 +136,7 @@ class BackupClient:
                 if ack_frame is None:
                     print(f"[CLIENT] No ACK received for chunk {chunk_index}")
                     self.last_ack = chunk_index - 1
+                    self._report_resume_point(total_chunks)
                     return False
 
                 acked_index = struct.unpack('!I', ack_frame['payload'])[0]
@@ -153,6 +160,19 @@ class BackupClient:
         print(f"[CLIENT] Transfer complete: {filename} "
               f"({bytes_sent} bytes in {elapsed:.2f}s, {throughput:.1f} KB/s)")
         return True
+
+    def _report_resume_point(self, total_chunks):
+        """Emit the next chunk for the bridge's retry, after a failure."""
+        server = ''
+        if self.current_server:
+            server = f'{self.current_server[0]}:{self.current_server[1]}'
+        payload = {
+            'last_ack': self.last_ack,
+            'next_chunk': self.last_ack + 1,
+            'total': total_chunks,
+            'server': server,
+        }
+        print('[RESUME_POINT] ' + json.dumps(payload), flush=True)
 
     def _report_progress(self, chunk_index, total_chunks, start_time, bytes_sent):
         """Emit a machine-readable progress line for the bridge to parse."""
