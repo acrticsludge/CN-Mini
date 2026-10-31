@@ -4,7 +4,7 @@ This report covers failures that threaten a backup itself: the server dying, the
 
 The focus is on cases a user can describe in one sentence. Protocol fuzzing, route flaps, and dashboard security are out of scope.
 
-This is a plan. None of the target behavior below is implemented yet.
+Case 1 is implemented on `edge-case-1`. The `.part` protection from case 3 is implemented with it. Cases 2 and 4-8 are still planned.
 
 ## Current baseline
 
@@ -105,9 +105,9 @@ The full design, including the dashboard button and topology animation, is in [s
 
 **Scenario.** Yesterday's `thesis.docx` is on h3. Today's transfer fails at chunk 10. The server already truncated yesterday's copy when the new transfer started.
 
-**Today.** `_handle_hello` opens the output with `wb` for a fresh transfer. The truncation happens before the first DATA arrives.
+**Today.** Implemented on `edge-case-1`: the server writes to `thesis.docx.part` and promotes with `os.replace` only after the last chunk. The old final copy stays until then, and `/api/files` hides `.part`.
 
-**Target.** Write to `thesis.docx.part`; `os.replace` to `thesis.docx` only after the last chunk is verified. The old file stays until then. Hide `.part` from the Stored Files panel, or label it "in progress".
+**Target.** Keep the old file untouched on a failed re-backup, surface a partial as "in progress" if needed, and clean stale `.part` files on startup.
 
 **Implementation notes.**
 

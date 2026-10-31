@@ -20,7 +20,7 @@
         <!-- Topology Panel -->
         <section class="panel" id="topology-panel">
             <h2>Network Topology</h2>
-            <svg id="topology-svg" viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+            <svg id="topology-svg" viewBox="25 0 600 400" xmlns="http://www.w3.org/2000/svg">
                 <!-- Switches -->
                 <g id="switches">
                     <rect x="200" y="50" width="80" height="50" rx="8" class="switch" id="sw-s1"/>
@@ -80,11 +80,20 @@
                 <button id="btn-stop" class="btn btn-danger">Stop Transfer</button>
                 <button id="btn-link-down" class="btn btn-warning">Trigger Link Failure</button>
                 <button id="btn-link-up" class="btn btn-success">Restore Link</button>
+                <label class="server-target" for="server-target">Server
+                    <select id="server-target">
+                        <option value="h3" selected>h3</option>
+                        <option value="h4">h4</option>
+                    </select>
+                </label>
+                <button id="btn-server-down" class="btn btn-danger">Kill Server</button>
+                <button id="btn-server-up" class="btn btn-success">Restart Server</button>
             </div>
             <div id="progress-container">
                 <div id="progress-bar"></div>
             </div>
-            <p id="progress-text">No transfer running</p>
+            <p id="progress-text" aria-live="polite">No transfer running</p>
+            <span id="server-status-text" class="sr-only" aria-live="polite"></span>
         </section>
 
         <!-- Shared Files Panel -->

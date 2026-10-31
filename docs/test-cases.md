@@ -62,3 +62,17 @@ All tests should pass. The test suite covers:
 4. **Recovery** — resume after partial transfer, concurrent clients
 5. **SDN logic** — topology graph, path computation, link failure recovery
 6. **Frontend** — API endpoint availability, file system structure
+
+## Server failure recovery (edge case 1)
+
+New tests:
+
+- `tests/test_transfer.py` — duplicate chunk, out-of-order chunk, resume with a missing file, resume with a partial file, empty file.
+- `tests/test_recovery.py` — client resume point, server accepted start.
+- `tests/test_bridge_retry.py` — same-server retry, failover, cancel during the probes, progress held during the retry.
+- `tests/test_serverctl.py` — kill, restart, idempotence, status, two probes.
+- `tests/test_dashboard_server.py` — server routes, status payload, retry phase, recovery label, `.part` hidden from `/api/files`.
+- `tests/test_e2e_local.py` — a real client resumes after the server dies and a new one starts.
+- `tests/test_transfer.py` — a completed transfer promotes `.part` to the final name; a shorter resume truncates the stale tail.
+
+Manual demo: kill h3 mid-transfer, restart it before the second probe, then compare the source and stored hashes. Leave h3 down to see the run restart on h4.

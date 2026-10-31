@@ -214,3 +214,124 @@ class TestFileTransfer:
         finally:
             client.close()
             os.unlink(path)
+
+    def test_duplicate_chunk_is_idempotent(self, server):
+        """A retry after a lost ACK must not write a second copy."""
+        from client.client import BackupClient
+        _, port, storage = server
+        content = b'A' * CHUNK_SIZE + b'B' * CHUNK_SIZE
+        name = 'duplicate.bin'
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello(name, len(content)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+            c0, c1 = content[:CHUNK_SIZE], content[CHUNK_SIZE:]
+            frame0 = pack_data(0, 2, c0, compute_crc32(c0))
+            client.sock.sendall(frame0)
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+            client.sock.sendall(frame0)
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+            client.sock.sendall(pack_data(1, 2, c1, compute_crc32(c1)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 1
+        finally:
+            client.close()
+        with open(os.path.join(storage, name), 'rb') as f:
+            assert f.read() == content
+
+    def test_out_of_order_chunk_lands_at_its_index(self, server):
+        from client.client import BackupClient
+        _, port, storage = server
+        content = b'C' * CHUNK_SIZE + b'D' * CHUNK_SIZE
+        name = 'out-of-order.bin'
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello(name, len(content)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+            c0, c1 = content[:CHUNK_SIZE], content[CHUNK_SIZE:]
+            client.sock.sendall(pack_data(1, 2, c1, compute_crc32(c1)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 1
+            client.sock.sendall(pack_data(0, 2, c0, compute_crc32(c0)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+        finally:
+            client.close()
+        with open(os.path.join(storage, name), 'rb') as f:
+            assert f.read() == content
+
+    def test_resume_with_missing_file_acks_zero(self, server):
+        """Failover to an empty server must tell the client to start at 0."""
+        from client.client import BackupClient
+        _, port, _ = server
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello('missing.bin', CHUNK_SIZE * 2,
+                                           resume_from=2))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+        finally:
+            client.close()
+
+    def test_partial_file_accepts_requested_resume(self, server):
+        from client.client import BackupClient
+        _, port, storage = server
+        content = b'E' * (CHUNK_SIZE * 3)
+        name = 'partial.bin'
+        with open(os.path.join(storage, name + '.part'), 'wb') as f:
+            f.write(content[:CHUNK_SIZE * 2])
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello(name, len(content), resume_from=2))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 2
+            chunk = content[CHUNK_SIZE * 2:]
+            client.sock.sendall(pack_data(2, 3, chunk, compute_crc32(chunk)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 2
+        finally:
+            client.close()
+        with open(os.path.join(storage, name), 'rb') as f:
+            assert f.read() == content
+        assert not os.path.exists(os.path.join(storage, name + '.part'))
+
+    def test_resume_shorter_file_truncates_old_tail(self, server):
+        """A resume over a longer part file must not keep the old tail."""
+        from client.client import BackupClient
+        _, port, storage = server
+        name = 'shorter.bin'
+        new = b'N' * CHUNK_SIZE + b'Y' * CHUNK_SIZE
+        with open(os.path.join(storage, name + '.part'), 'wb') as f:
+            f.write(b'N' * CHUNK_SIZE + b'X' * (CHUNK_SIZE * 2))
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello(name, len(new), resume_from=1))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 1
+            chunk = new[CHUNK_SIZE:]
+            client.sock.sendall(pack_data(1, 2, chunk, compute_crc32(chunk)))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 1
+        finally:
+            client.close()
+        with open(os.path.join(storage, name), 'rb') as f:
+            assert f.read() == new
+        assert not os.path.exists(os.path.join(storage, name + '.part'))
+
+    def test_empty_file_completes(self, server):
+        from client.client import BackupClient
+        _, port, storage = server
+        client = BackupClient([('127.0.0.1', port)])
+        client.connect()
+        client.sock.settimeout(2)
+        try:
+            client.sock.sendall(pack_hello('empty.bin', 0))
+            assert unpack_ack(recv_frame(client.sock)['payload']) == 0
+        finally:
+            client.close()
+        path = os.path.join(storage, 'empty.bin')
+        assert os.path.exists(path)
+        assert os.path.getsize(path) == 0
+        assert not os.path.exists(path + '.part')

@@ -21,6 +21,7 @@ PROJECT_FILES = [
     'mininet/topology.py',
     'mininet/bridge.py',
     'mininet/linkctl.py',
+    'mininet/serverctl.py',
     'controller/sdn_controller.py',
     'frontend/app.py',
     'tests/test_transfer.py',
@@ -29,7 +30,10 @@ PROJECT_FILES = [
     'tests/test_controller_reroute.py',
     'tests/test_bridge_request.py',
     'tests/test_bridge_singleton.py',
+    'tests/test_bridge_retry.py',
     'tests/test_dashboard_busy.py',
+    'tests/test_dashboard_server.py',
+    'tests/test_serverctl.py',
     'tests/test_e2e_local.py',
     'tests/test_lint.py',
 ]

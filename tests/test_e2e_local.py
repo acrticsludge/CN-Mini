@@ -94,6 +94,9 @@ def chain(tmp_path):
     dash.PROGRESS_FILE = bridge.PROGRESS_FILE
     dash.EVENTS_FILE = bridge.EVENTS_FILE
     dash.CANCEL_FILE = bridge.CANCEL_FILE
+    dash.SERVER_REQUEST_FILE = str(shared / 'server_request.json')
+    dash.SERVER_RESULT_FILE = str(shared / 'server_result.json')
+    dash.SERVER_STATUS_FILE = str(shared / 'server_status.json')
     dash.transfer_state.update({
         'running': False, 'filename': None, 'request_id': None, 'progress': 0,
         'chunks_sent': 0, 'total_chunks': 0, 'throughput': 0.0,
@@ -157,3 +160,69 @@ def test_double_click_yields_one_run_and_one_rejection(chain):
     assert res['status'] == 'done', res
     assert res['request_id'] == winner.get_json()['request_id']
     assert (chain['store'] / 'a.bin').read_bytes() == chain['payload_a']
+
+
+def test_server_restart_resumes_same_run(tmp_path):
+    """A real client resumes after the first server dies and a new one starts."""
+    import socket
+    from common.protocol import CHUNK_SIZE, pack_ack
+    from common.transport import recv_frame
+    from server.server import BackupServer
+
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    store = tmp_path / 'store'
+    store.mkdir()
+    content = b'R' * (CHUNK_SIZE * 2)
+    (shared / 'a.bin').write_bytes(content)
+
+    port = free_port()
+    bridge = _load('bridge_restart_under_test', BRIDGE_SPEC)
+    bridge.SHARED_DIR = str(shared)
+    bridge.REQUEST_FILE = str(shared / 'transfer_request.json')
+    bridge.RESULT_FILE = str(shared / 'transfer_result.json')
+    bridge.PROGRESS_FILE = str(shared / 'transfer_progress.json')
+    bridge.EVENTS_FILE = str(shared / 'transfer_events.json')
+    bridge.CANCEL_FILE = str(shared / 'transfer_cancel.json')
+    bridge.SERVERS = [f'127.0.0.1:{port}']
+    bridge.PROBE_INTERVAL = 1
+    bridge.CLIENT_TIMEOUT = 30
+
+    ready = threading.Event()
+    holder = {}
+
+    def fake_then_real():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        ready.set()
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            recv_frame(conn)              # HELLO
+            conn.sendall(pack_ack(0))
+            data = recv_frame(conn)       # chunk 0
+            (store / 'a.bin.part').write_bytes(data['payload'])
+            conn.sendall(pack_ack(data['index']))
+        finally:
+            conn.close()
+            srv.close()
+        real = BackupServer(host='127.0.0.1', port=port, storage_dir=str(store))
+        holder['srv'] = real
+        threading.Thread(target=real.start, daemon=True).start()
+
+    t = threading.Thread(target=fake_then_real, daemon=True)
+    t.start()
+    assert ready.wait(5)
+    try:
+        res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1'})
+    finally:
+        t.join(timeout=5)
+        if holder.get('srv'):
+            holder['srv'].stop()
+
+    assert res['status'] == 'done', res
+    assert res['attempts'] == 2
+    assert res['resumed_from'] == 1
+    assert (store / 'a.bin').read_bytes() == content

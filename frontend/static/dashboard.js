@@ -132,6 +132,32 @@ document.getElementById('btn-link-up').addEventListener('click', async () => {
     }
 });
 
+document.getElementById('btn-server-down').addEventListener('click', async () => {
+    const host = document.getElementById('server-target').value;
+    addEvent(`Killing ${host} — probing twice, 5s apart`);
+    const response = await fetch('/api/server-down', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+    });
+    const result = await response.json();
+    addEvent(`Server ${host}: ${result.error || result.status || 'down'}`);
+    if (result.applied) updateHostStatus(host, 'down');
+});
+
+document.getElementById('btn-server-up').addEventListener('click', async () => {
+    const host = document.getElementById('server-target').value;
+    addEvent(`Starting ${host}`);
+    const response = await fetch('/api/server-up', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+    });
+    const result = await response.json();
+    addEvent(`Server ${host}: ${result.error || result.status || 'up'}`);
+    if (result.applied) updateHostStatus(host, 'up');
+});
+
 document.getElementById('btn-refresh-files').addEventListener('click', loadFiles);
 
 // Functions
@@ -139,6 +165,10 @@ function eventClass(text) {
     // Severity markers: backend lines carry [RECOVERY]/[LINK]/[DONE]/[FAIL];
     // local notices are matched by keyword. Unknown lines stay unstyled.
     if (text.includes('[RECOVERY]')) return 'evt-recovery';
+    if (text.includes('[SERVER]')) return 'evt-server';
+    if (text.includes('[RETRY]')) return 'evt-retry';
+    if (text.includes('[RESUME]')) return 'evt-resume';
+    if (text.includes('[FAILOVER]')) return 'evt-failover';
     if (text.includes('[FAIL]') || text.includes('Transfer failed')
         || text.includes('Transfer rejected')) return 'evt-fail';
     if (text.includes('[DONE]') || text.includes('Transfer complete')) return 'evt-done';
@@ -172,9 +202,23 @@ function updateProgress(state) {
     const sent = Number(state.chunks_sent) || 0;
     const total = Number(state.total_chunks) || 0;
     const tput = Number(state.throughput) || 0;
+    const phase = state.phase || (state.running ? 'running' : '');
+
+    updateActiveServer(state.server);
 
     bar.style.width = `${progress}%`;
-    if (state.running) {
+    if (phase === 'retrying') {
+        text.textContent = `${state.server || 'server'} unreachable, retrying `
+            + `${state.attempt || 1}/${state.max_attempts || 2} `
+            + `(chunk ${sent}/${total})`;
+        bar.className = 'running retrying';
+    } else if (phase === 'resuming') {
+        text.textContent = `Resuming at chunk ${sent}/${total}`;
+        bar.className = 'running resuming';
+    } else if (phase === 'failover') {
+        text.textContent = `Restarting on backup server ${state.server || 'h4'} — ${sent}/${total}`;
+        bar.className = 'running failover';
+    } else if (state.running) {
         text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
         bar.className = 'running';
     } else if (state.result && state.result.status === 'done') {
@@ -213,6 +257,66 @@ function updateProgress(state) {
     }
 }
 
+function updateHostStatus(host, status) {
+    const el = document.getElementById('host-' + host);
+    if (!el) return;
+    const wasDown = el.classList.contains('down') || el.classList.contains('unknown');
+    el.classList.remove('down', 'recovering', 'unknown');
+    if (status === 'down') {
+        el.classList.remove('active-server');
+        el.classList.add('down');
+    } else if (status === 'unknown') {
+        el.classList.add('unknown');
+    } else if (status === 'up' && wasDown) {
+        el.classList.add('recovering');
+        setTimeout(() => el.classList.remove('recovering'), 1500);
+    }
+}
+
+function updateActiveServer(host) {
+    document.querySelectorAll('#topology-svg .host.active-server').forEach(el => {
+        el.classList.remove('active-server');
+    });
+    const el = host ? document.getElementById('host-' + host) : null;
+    if (el && !el.classList.contains('down')) el.classList.add('active-server');
+}
+
+function updateServerStatus(servers) {
+    if (!servers) return;
+    const down = [];
+    for (const host of ['h3', 'h4']) {
+        const s = servers[host];
+        if (!s) continue;
+        const status = s.alive === true ? 'up' : (s.alive === false ? 'down' : 'unknown');
+        if (status === 'down') down.push(host);
+        updateHostStatus(host, status);
+    }
+    const el = document.getElementById('server-status-text');
+    if (el) el.textContent = down.length ? `Server ${down.join(', ')} down` : 'Servers up';
+}
+
+function renderRetryRing(host) {
+    const g = flowLayer();
+    if (!g) return;
+    let ring = document.getElementById('retry-ring');
+    if (!host) {
+        if (ring) ring.remove();
+        return;
+    }
+    if (!ring) {
+        ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        ring.setAttribute('id', 'retry-ring');
+        ring.setAttribute('class', 'retry-ring');
+        ring.setAttribute('r', '34');
+        g.appendChild(ring);
+    }
+    const p = FLOW_NODES[host];
+    if (p) {
+        ring.setAttribute('cx', p.x);
+        ring.setAttribute('cy', p.y);
+    }
+}
+
 function updateLinkStatus(sw1, sw2, status) {
     // Link elements are stored in dashboard.html order (link-s1-s2); events
     // may name the pair either way round, so try both.
@@ -243,8 +347,7 @@ const FLOW_MESH = [['s1', 's2'], ['s1', 's3'], ['s1', 's4'],
 // server h3. The result payload does not name the receiving server, so h3 is
 // a documented assumption, not a measured fact.
 const FLOW_SRC = 'h1';
-const FLOW_DST = 'h3';
-let flowDots = [];
+let flowDest = 'h3';
 let flowPathKey = '';
 
 function linkElement(a, b) {
@@ -290,37 +393,60 @@ function flowLayer() {
     if (!g) {
         g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         g.setAttribute('id', 'flow-layer');
+        g.setAttribute('class', 'flow-layer');
         svg.appendChild(g);
+    }
+    if (!document.getElementById('flow-defs')) {
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const defs = document.createElementNS(svgNS, 'defs');
+        defs.setAttribute('id', 'flow-defs');
+        const m = document.createElementNS(svgNS, 'marker');
+        m.setAttribute('id', 'flow-arrow');
+        m.setAttribute('markerWidth', '10');
+        m.setAttribute('markerHeight', '10');
+        m.setAttribute('refX', '9');
+        m.setAttribute('refY', '3');
+        m.setAttribute('orient', 'auto');
+        m.setAttribute('markerUnits', 'strokeWidth');
+        const p = document.createElementNS(svgNS, 'path');
+        p.setAttribute('d', 'M0,0 L0,6 L9,3 z');
+        p.setAttribute('fill', '#f0a500');
+        m.appendChild(p);
+        defs.appendChild(m);
+        svg.insertBefore(defs, svg.firstChild);
     }
     return g;
 }
 
-function pointAlongPath(nodes, frac) {
-    const pts = nodes.map(n => FLOW_NODES[n]);
-    const segLens = [];
-    let total = 0;
-    for (let i = 0; i < pts.length - 1; i++) {
-        const len = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
-        segLens.push(len);
-        total += len;
-    }
-    if (total === 0) return pts[0];
-    let target = Math.min(Math.max(frac, 0), 1) * total;
-    for (let i = 0; i < segLens.length; i++) {
-        if (target <= segLens[i]) {
-            const t = segLens[i] === 0 ? 0 : target / segLens[i];
-            return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
-                     y: pts[i].y + (pts[i + 1].y - pts[i].y) * t };
+function flowSegments(nodes) {
+    // Build each segment from the link's own endpoints, oriented in the
+    // direction of travel. Center-to-center points drift off diagonal links.
+    const parts = [];
+    for (let i = 0; i < nodes.length - 1; i++) {
+        const a = nodes[i];
+        const b = nodes[i + 1];
+        const el = linkElement(a, b);
+        const p = FLOW_NODES[a];
+        if (!el || !p) continue;
+        let x1 = Number(el.getAttribute('x1'));
+        let y1 = Number(el.getAttribute('y1'));
+        let x2 = Number(el.getAttribute('x2'));
+        let y2 = Number(el.getAttribute('y2'));
+        if (Math.hypot(x2 - p.x, y2 - p.y) < Math.hypot(x1 - p.x, y1 - p.y)) {
+            [x1, x2] = [x2, x1];
+            [y1, y2] = [y2, y1];
         }
-        target -= segLens[i];
+        parts.push(`M ${x1} ${y1} L ${x2} ${y2}`);
     }
-    return pts[pts.length - 1];
+    return parts.join(' ');
 }
 
 function clearFlow() {
     const g = document.getElementById('flow-layer');
-    if (g) g.innerHTML = '';
-    flowDots = [];
+    if (g) {
+        g.innerHTML = '';
+        g.classList.remove('retrying');
+    }
     flowPathKey = '';
     document.querySelectorAll('#topology-svg .link.active').forEach(el => {
         el.classList.remove('active');
@@ -343,41 +469,39 @@ function renderFlow(state) {
     // and the dots continue at the same fraction on the new route — the jump
     // *is* the reroute made visible.
     const total = Number(state.total_chunks) || 0;
+    const phase = state.phase || '';
+    if (phase !== 'retrying') {
+        if (state.server === 'h4') flowDest = 'h4';
+        else if (state.server === 'h3') flowDest = 'h3';
+    }
     if (!state.running || total <= 0) {
         clearFlow();
+        renderRetryRing(null);
         return;
     }
-    const nodes = computeFlowPath(FLOW_SRC, FLOW_DST);
+    const retrying = phase === 'retrying';
+    const nodes = computeFlowPath(FLOW_SRC, flowDest);
     if (!nodes) {
         clearFlow();
+        renderRetryRing(null);
         return;
     }
     const key = nodes.join('>');
     const g = flowLayer();
     if (!g) return;
-    if (key !== flowPathKey || flowDots.length === 0) {
+    g.classList.toggle('retrying', retrying);
+    if (key !== flowPathKey) {
         g.innerHTML = '';
-        flowDots = [];
-        const specs = [{ r: 5, cls: 'flow-dot' },
-                       { r: 3.5, cls: 'flow-dot trail' },
-                       { r: 2.5, cls: 'flow-dot trail' }];
-        for (const s of specs) {
-            const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            c.setAttribute('r', s.r);
-            c.setAttribute('class', s.cls);
-            g.appendChild(c);
-            flowDots.push(c);
-        }
         flowPathKey = key;
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('id', 'flow-line');
+        path.setAttribute('class', 'flow-line');
+        path.setAttribute('marker-end', 'url(#flow-arrow)');
+        path.setAttribute('d', flowSegments(nodes));
+        g.appendChild(path);
         highlightFlowPath(nodes);
     }
-    const frac = (Number(state.chunks_sent) || 0) / total;
-    const offsets = [0, 0.04, 0.08];
-    flowDots.forEach((dot, i) => {
-        const p = pointAlongPath(nodes, frac - offsets[i]);
-        dot.setAttribute('cx', p.x.toFixed(1));
-        dot.setAttribute('cy', p.y.toFixed(1));
-    });
+    renderRetryRing(retrying ? flowDest : null);
 }
 
 async function loadFiles() {
@@ -444,8 +568,13 @@ document.getElementById('btn-refresh-browse').addEventListener('click', loadBrow
 async function pollOnce() {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();
+    const rt = metrics.recovery_time;
+    const kind = metrics.recovery_kind;
+    const target = metrics.recovery_target;
     document.getElementById('recovery-value').textContent =
-        metrics.recovery_time ? `${metrics.recovery_time.toFixed(2)}s` : 'N/A';
+        rt != null
+            ? `${rt.toFixed(2)}s${kind ? ` (${kind}${target ? ' ' + target : ''})` : ''}`
+            : 'N/A';
     try {
         const res = await fetch('/api/transfer-result');
         const tr = await res.json();
@@ -474,6 +603,7 @@ async function pollOnce() {
                 document.getElementById('btn-start').disabled = transferRunning;
             }
         }
+        updateServerStatus(sdata.servers);
         const b = sdata.bridge;
         if (b) {
             const bridgeEl = document.getElementById('bridge-value');

@@ -27,6 +27,9 @@ EVENTS_FILE = os.path.join(SHARED_DIR, 'transfer_events.json')
 CANCEL_FILE = os.path.join(SHARED_DIR, 'transfer_cancel.json')
 LINK_REQUEST_FILE = os.path.join(SHARED_DIR, 'link_request.json')
 LINK_RESULT_FILE = os.path.join(SHARED_DIR, 'link_result.json')
+SERVER_REQUEST_FILE = os.path.join(SHARED_DIR, 'server_request.json')
+SERVER_RESULT_FILE = os.path.join(SHARED_DIR, 'server_result.json')
+SERVER_STATUS_FILE = os.path.join(SHARED_DIR, 'server_status.json')
 
 # Global state
 transfer_state = {
@@ -39,8 +42,17 @@ transfer_state = {
     'throughput': 0.0,
     'start_time': None,
     'recovery_time': None,
+    'recovery_kind': None,
+    'recovery_target': None,
     'duration': None,
     'link_down_at': None,
+    'server_down_at': None,
+    'phase': None,
+    'attempt': 0,
+    'max_attempts': 2,
+    'resume_from': 0,
+    'server': None,
+    'retry_wait_s': None,
     'result': None,
     'completed_at': None,
 }
@@ -152,6 +164,25 @@ def _bridge_status():
             'pid': info.get('pid')}
 
 
+def _server_status():
+    """Liveness for h3/h4. A stale file means unknown, not down."""
+    info = _read_json(SERVER_STATUS_FILE)
+    try:
+        age = time.time() - os.path.getmtime(SERVER_STATUS_FILE)
+    except OSError:
+        age = None
+    out = {}
+    for host in ('h3', 'h4'):
+        entry = (info or {}).get(host) or {}
+        alive = entry.get('alive')
+        if age is None or age > 10:
+            alive = None
+        out[host] = {'alive': alive, 'pid': entry.get('pid'),
+                     'since': entry.get('since'),
+                     'age_s': round(age, 1) if age is not None else None}
+    return out
+
+
 def _sync_transfer_state():
     """Fold the bridge's progress/result/events into dashboard state.
 
@@ -166,6 +197,12 @@ def _sync_transfer_state():
         transfer_state['chunks_sent'] = progress.get('chunk', 0)
         transfer_state['total_chunks'] = progress.get('total', 0)
         transfer_state['throughput'] = progress.get('throughput', 0.0)
+        transfer_state['phase'] = progress.get('phase')
+        transfer_state['attempt'] = progress.get('attempt', 0)
+        transfer_state['max_attempts'] = progress.get('max_attempts', 2)
+        transfer_state['resume_from'] = progress.get('resume_from', 0)
+        transfer_state['server'] = progress.get('server')
+        transfer_state['retry_wait_s'] = progress.get('retry_wait_s')
         # The bar/text read state.progress, which used to be 0 for the whole
         # run and 100 at the end — so a 1 GB transfer sat at 0.0% for minutes
         # while chunks visibly flowed underneath it.
@@ -184,11 +221,39 @@ def _sync_transfer_state():
                 pass  # straggler ACK from before the blackhole; keep waiting
             else:
                 transfer_state['recovery_time'] = round(dt, 1)
+                transfer_state['recovery_kind'] = 'link'
                 transfer_state['link_down_at'] = None
                 log_event(f"[RECOVERY] Traffic flowing again "
                           f"{dt:.1f}s after link down "
                           f"({transfer_state['filename']}: "
                           f"chunk {progress.get('chunk', 0)}/{total})")
+        # Server recovery uses the same clock and the same one-shot rule.
+        if (progress.get('phase') == 'retrying'
+                and transfer_state.get('server_down_at') is None):
+            transfer_state['server_down_at'] = time.time()
+            transfer_state['recovery_target'] = (
+                transfer_state.get('recovery_target') or progress.get('server'))
+        if (progress.get('chunk', 0) > prev_chunks
+                and transfer_state.get('server_down_at') is not None
+                and transfer_state.get('recovery_time') is None):
+            dt = time.time() - transfer_state['server_down_at']
+            if dt >= RECOVERY_STRAGGLER_GRACE:
+                target = (transfer_state.get('recovery_target')
+                          or progress.get('server') or transfer_state.get('server'))
+                current = (progress.get('server') or transfer_state.get('server')
+                           or target)
+                transfer_state['recovery_time'] = round(dt, 1)
+                transfer_state['recovery_kind'] = 'server'
+                transfer_state['server_down_at'] = None
+                if current != target:
+                    transfer_state['recovery_target'] = f'{target}->{current}'
+                    log_event(f"[RECOVERY] {target} did not return; {current} "
+                              f"took over after {dt:.1f}s "
+                              f"(chunk {progress.get('chunk', 0)}/{total})")
+                else:
+                    transfer_state['recovery_target'] = target
+                    log_event(f"[RECOVERY] Server {target} back after {dt:.1f}s; "
+                              f"resumed at chunk {progress.get('chunk', 0)}/{total}")
         if not progress.get('running') and not progress.get('cancelled'):
             transfer_state['progress'] = 100
 
@@ -229,6 +294,7 @@ def _sync_transfer_state():
             _events_ingested = 0  # file was reset by a new transfer
         for entry in events[_events_ingested:]:
             event_log.append(entry)
+            print(entry, flush=True)
         _events_ingested = len(events)
         # Keep a generous tail; the dashboard renders the most recent ones.
         del event_log[:-EVENT_LOG_LIMIT]
@@ -239,6 +305,7 @@ def log_event(message):
     timestamp = time.strftime('%H:%M:%S')
     entry = f'[{timestamp}] {message}'
     event_log.append(entry)
+    print(entry, flush=True)
     socketio.emit('event', {'message': message, 'timestamp': timestamp})
 
 
@@ -256,7 +323,9 @@ def list_files():
         if os.path.exists(path):
             files[server] = [
                 {'name': f, 'size': os.path.getsize(os.path.join(path, f))}
-                for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))
+                for f in os.listdir(path)
+                if os.path.isfile(os.path.join(path, f))
+                and not f.endswith('.part')
             ]
         else:
             files[server] = []
@@ -338,7 +407,16 @@ def start_transfer():
     transfer_state['result'] = None
     transfer_state['duration'] = None
     transfer_state['recovery_time'] = None
+    transfer_state['recovery_kind'] = None
+    transfer_state['recovery_target'] = None
     transfer_state['link_down_at'] = None
+    transfer_state['server_down_at'] = None
+    transfer_state['phase'] = 'queued'
+    transfer_state['attempt'] = 0
+    transfer_state['max_attempts'] = 2
+    transfer_state['resume_from'] = 0
+    transfer_state['server'] = None
+    transfer_state['retry_wait_s'] = None
     # The previous transfer's result is intentionally kept out of the new run's
     # state, but its metrics stay visible in the panel until this one finishes.
     transfer_state['completed_at'] = None
@@ -424,6 +502,8 @@ def _request_link(sw1, sw2, state):
             # previous measurement belongs to an older failure.
             transfer_state['link_down_at'] = time.time()
             transfer_state['recovery_time'] = None
+            transfer_state['recovery_kind'] = 'link'
+            transfer_state['recovery_target'] = f'{sw1}-{sw2}'
         log_event(f'[LINK] {verb}: {sw1} <-> {sw2} confirmed by Mininet')
         socketio.emit('link_event', {'sw1': sw1, 'sw2': sw2, 'status': state})
         return jsonify({'status': state, 'sw1': sw1, 'sw2': sw2, 'applied': True})
@@ -440,6 +520,65 @@ def _request_link(sw1, sw2, state):
                              'mininet/topology.py running?'}), 504
 
 
+def _request_server(host, action):
+    """Ask Mininet to kill or restart one backup server, and wait for confirmation."""
+    if host not in ('h3', 'h4'):
+        return jsonify({'error': f'Invalid server: {host}'}), 400
+    if action not in ('down', 'up'):
+        return jsonify({'error': f'Invalid action: {action}'}), 400
+    try:
+        os.makedirs(SHARED_DIR, exist_ok=True)
+        request_id = f'{int(time.time() * 1000)}-{os.getpid()}'
+        _write_json_atomic(SERVER_REQUEST_FILE, {
+            'host': host, 'action': action,
+            'request_id': request_id,
+            'requested_at': time.time(),
+        })
+    except Exception as e:
+        return jsonify({'error': f'Could not write server request: {e}'}), 500
+
+    confirmed = None
+    for _ in range(40):
+        res = _read_json(SERVER_RESULT_FILE)
+        if (res and res.get('request_id') == request_id
+                and res.get('host') == host and res.get('action') == action):
+            confirmed = res
+            break
+        time.sleep(0.25)
+
+    if confirmed and confirmed.get('applied'):
+        state = confirmed.get('state', action)
+        if state == 'down' and transfer_state.get('running'):
+            transfer_state['server_down_at'] = time.time()
+            transfer_state['recovery_time'] = None
+            transfer_state['recovery_target'] = host
+        log_event(f"[SERVER] {host} {state} confirmed")
+        socketio.emit('server_event', {'host': host, 'status': state})
+        return jsonify({'status': state, 'host': host, 'applied': True})
+    if confirmed:
+        log_event(f"[SERVER] {host} {action} REJECTED — {confirmed.get('error')}")
+        return jsonify({'status': 'error', 'host': host,
+                        'applied': False, 'error': confirmed.get('error')}), 502
+
+    log_event(f"[SERVER] {host} {action} requested but Mininet did not confirm "
+              f"(is mininet/topology.py running?)")
+    return jsonify({'status': 'unconfirmed', 'host': host, 'applied': False,
+                    'error': 'Mininet did not confirm within 10s — is '
+                             'mininet/topology.py running?'}), 504
+
+
+@app.route('/api/server-down', methods=['POST'])
+def server_down():
+    data = request.get_json(force=True, silent=True) or {}
+    return _request_server(data.get('host', 'h3'), 'down')
+
+
+@app.route('/api/server-up', methods=['POST'])
+def server_up():
+    data = request.get_json(force=True, silent=True) or {}
+    return _request_server(data.get('host', 'h3'), 'up')
+
+
 @app.route('/api/bridge')
 def bridge_status():
     """Bridge liveness for the dashboard indicator."""
@@ -452,6 +591,7 @@ def get_status():
     _sync_transfer_state()
     return jsonify({
         'transfer': transfer_state,
+        'servers': _server_status(),
         'events': event_log[-50:],
         'bridge': _bridge_status(),
     })
@@ -464,6 +604,8 @@ def get_metrics():
     return jsonify({
         'throughput': transfer_state.get('throughput', 0),
         'recovery_time': transfer_state.get('recovery_time'),
+        'recovery_kind': transfer_state.get('recovery_kind'),
+        'recovery_target': transfer_state.get('recovery_target'),
         'progress': transfer_state.get('progress', 0),
     })
 

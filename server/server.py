@@ -32,9 +32,10 @@ class ClientHandler(threading.Thread):
         self.filename = None
         self.file_size = 0
         self.total_chunks = 0
-        self.received_chunks = 0
+        self.received = set()
         self.file_handle = None
         self.output_path = None
+        self.part_path = None
 
     def run(self):
         try:
@@ -60,75 +61,108 @@ class ClientHandler(threading.Thread):
             self._handle_resume(frame)
 
     def _handle_hello(self, frame):
-        """Process HELLO: prepare output file and send ready ACK.
+        """Process HELLO: prepare output file and send the accepted start chunk.
 
-        A resume_from > 0 preserves what is already on disk and seeks to the
-        resume point; a fresh transfer truncates, so re-sending a shorter file
-        over a longer stored one cannot leave the old file's tail behind.
+        A resume is accepted only when the file on disk covers that offset.
+        Otherwise the client is told to start at 0, which keeps a failover to
+        an empty server from writing chunk N at offset 0.
         """
         info = json.loads(frame['payload'].decode('utf-8'))
-        self.filename = info['filename']
-        self.file_size = info['file_size']
+        raw_name = str(info.get('filename', ''))
+        self.filename = os.path.basename(raw_name.replace('\\', '/'))
+        if not self.filename or self.filename in ('.', '..'):
+            print(f"[SERVER] Invalid filename from {self.addr}")
+            self.conn.close()
+            return
+        self.file_size = int(info['file_size'])
         resume_from = int(info.get('resume_from', 0) or 0)
         self.total_chunks = (self.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         self.output_path = os.path.join(self.storage_dir, self.filename)
+        # The in-progress copy stays hidden from /api/files until it is whole.
+        self.part_path = self.output_path + '.part'
         os.makedirs(self.storage_dir, exist_ok=True)
 
-        resuming = resume_from > 0 and os.path.exists(self.output_path)
-        self.file_handle = open(self.output_path, 'r+b' if resuming else 'wb')
-        self._file_pos = resume_from * CHUNK_SIZE if resuming else 0
-        self.received_chunks = resume_from if resuming else 0
-        if resuming:
-            self.file_handle.seek(self._file_pos)
+        accepted = 0
+        if 0 < resume_from <= self.total_chunks and os.path.exists(self.part_path):
+            if os.path.getsize(self.part_path) >= resume_from * CHUNK_SIZE:
+                accepted = resume_from
+        self.received = set(range(accepted))
+        self.file_handle = open(self.part_path, 'r+b' if accepted else 'wb')
+        if accepted:
+            self.file_handle.seek(accepted * CHUNK_SIZE)
 
         self._start_time = time.time()
-        self.send_ack(0)
-        mode = f'resume from chunk {resume_from}' if resuming else 'fresh transfer'
+        if self.file_size == 0:
+            self._finish()
+        elif accepted == self.total_chunks:
+            # The stored copy already covers the whole file. Drop any old tail.
+            self.file_handle.truncate(self.file_size)
+            self._finish()
+        self.send_ack(accepted)
+        mode = f'resume from chunk {accepted}' if accepted else 'fresh transfer'
         print(f"[SERVER] Receiving '{self.filename}' ({self.file_size} bytes, "
               f"{self.total_chunks} chunks, {mode}) from {self.addr}")
 
     def _handle_data(self, frame):
-        """Process DATA: verify CRC32, write chunk, send ACK."""
+        """Process DATA: verify CRC32, write at the chunk's index, send ACK."""
         if self.file_handle is None:
+            return
+        index = frame['index']
+        if index < 0 or index >= self.total_chunks:
+            return
+        # A retry after a lost ACK sends the same index again. ACK it without
+        # writing a second copy.
+        if index in self.received:
+            self.send_ack(index)
             return
         payload = frame['payload']
         expected_checksum = frame['checksum']
         if not verify_crc32(payload, expected_checksum):
-            print(f"[SERVER] CRC32 mismatch on chunk {frame['index']}, dropping")
+            print(f"[SERVER] CRC32 mismatch on chunk {index}, dropping")
             return
-        self.file_handle.seek(self._file_pos)
+        self.file_handle.seek(index * CHUNK_SIZE)
         self.file_handle.write(payload)
         self.file_handle.flush()
-        self._file_pos += len(payload)
-        self.received_chunks += 1
-        self.send_ack(frame['index'])
-        if self.received_chunks >= self.total_chunks:
+        self.received.add(index)
+        if len(self.received) >= self.total_chunks:
+            # A resume can sit on a longer old part file; cut the stale tail.
+            self.file_handle.truncate(self.file_size)
             elapsed = time.time() - self._start_time
             print(f"[SERVER] Transfer complete: {self.filename} "
-                  f"({self.received_chunks} chunks in {elapsed:.2f}s)")
-            self._report_stored()
+                  f"({len(self.received)} chunks in {elapsed:.2f}s)")
+            self._finish()
+        self.send_ack(index)
 
     def _handle_resume(self, frame):
         """Process RESUME: rewind to the resume point and confirm it to the client."""
+        if self.file_handle is None:
+            return
         last_ack = struct.unpack('!I', frame['payload'])[0] if len(frame['payload']) == 4 else -1
         if last_ack < 0:
             print(f"[SERVER] Malformed RESUME payload ({len(frame['payload'])} bytes)")
-            self.send_ack(-1)
             return
         # Skip ahead to the first chunk the client still owes us.
-        self._file_pos = (last_ack + 1) * CHUNK_SIZE
-        self.file_handle.seek(self._file_pos)
-        self.received_chunks = last_ack + 1
+        self.received = set(range(last_ack + 1))
+        self.file_handle.seek((last_ack + 1) * CHUNK_SIZE)
         self.send_ack(last_ack)
         print(f"[SERVER] Resume confirmed from chunk {last_ack + 1} "
-              f"(offset {self._file_pos} bytes)")
+              f"(offset {(last_ack + 1) * CHUNK_SIZE} bytes)")
+
+    def _finish(self):
+        """Close the part file and atomically promote it to the final name."""
+        if self.file_handle:
+            self.file_handle.flush()
+            self.file_handle.close()
+            self.file_handle = None
+        os.replace(self.part_path, self.output_path)
+        self._report_stored()
 
     def _report_stored(self):
         """Emit a machine-readable receipt so the bridge can verify server-side."""
         receipt = {
             'filename': self.filename,
             'size': os.path.getsize(self.output_path),
-            'chunks': self.received_chunks,
+            'chunks': len(self.received),
         }
         print('[STORED] ' + json.dumps(receipt), flush=True)
 
