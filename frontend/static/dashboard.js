@@ -132,6 +132,32 @@ document.getElementById('btn-link-up').addEventListener('click', async () => {
     }
 });
 
+document.getElementById('btn-server-down').addEventListener('click', async () => {
+    const host = document.getElementById('server-target').value;
+    addEvent(`Killing ${host} — probing twice, 5s apart`);
+    const response = await fetch('/api/server-down', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+    });
+    const result = await response.json();
+    addEvent(`Server ${host}: ${result.error || result.status || 'down'}`);
+    if (result.applied) updateHostStatus(host, 'down');
+});
+
+document.getElementById('btn-server-up').addEventListener('click', async () => {
+    const host = document.getElementById('server-target').value;
+    addEvent(`Starting ${host}`);
+    const response = await fetch('/api/server-up', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host })
+    });
+    const result = await response.json();
+    addEvent(`Server ${host}: ${result.error || result.status || 'up'}`);
+    if (result.applied) updateHostStatus(host, 'up');
+});
+
 document.getElementById('btn-refresh-files').addEventListener('click', loadFiles);
 
 // Functions
@@ -139,6 +165,10 @@ function eventClass(text) {
     // Severity markers: backend lines carry [RECOVERY]/[LINK]/[DONE]/[FAIL];
     // local notices are matched by keyword. Unknown lines stay unstyled.
     if (text.includes('[RECOVERY]')) return 'evt-recovery';
+    if (text.includes('[SERVER]')) return 'evt-server';
+    if (text.includes('[RETRY]')) return 'evt-retry';
+    if (text.includes('[RESUME]')) return 'evt-resume';
+    if (text.includes('[FAILOVER]')) return 'evt-failover';
     if (text.includes('[FAIL]') || text.includes('Transfer failed')
         || text.includes('Transfer rejected')) return 'evt-fail';
     if (text.includes('[DONE]') || text.includes('Transfer complete')) return 'evt-done';
@@ -172,9 +202,24 @@ function updateProgress(state) {
     const sent = Number(state.chunks_sent) || 0;
     const total = Number(state.total_chunks) || 0;
     const tput = Number(state.throughput) || 0;
+    const phase = state.phase || (state.running ? 'running' : '');
+
+    updateActiveServer(state.server);
 
     bar.style.width = `${progress}%`;
-    if (state.running) {
+    if (phase === 'retrying') {
+        text.textContent = `${state.server || 'server'} unreachable, retrying `
+            + `${state.attempt || 1}/${state.max_attempts || 2} `
+            + `(chunk ${sent}/${total})`;
+        bar.className = 'running retrying';
+    } else if (phase === 'resuming') {
+        text.textContent = `Resuming at chunk ${sent}/${total}`;
+        bar.className = 'running resuming';
+    } else if (phase === 'failover') {
+        text.textContent = `Restarting on backup server ${state.server || 'h4'}`;
+        bar.style.width = '0%';
+        bar.className = 'running failover';
+    } else if (state.running) {
         text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
         bar.className = 'running';
     } else if (state.result && state.result.status === 'done') {
@@ -213,6 +258,66 @@ function updateProgress(state) {
     }
 }
 
+function updateHostStatus(host, status) {
+    const el = document.getElementById('host-' + host);
+    if (!el) return;
+    const wasDown = el.classList.contains('down') || el.classList.contains('unknown');
+    el.classList.remove('down', 'recovering', 'unknown');
+    if (status === 'down') {
+        el.classList.remove('active-server');
+        el.classList.add('down');
+    } else if (status === 'unknown') {
+        el.classList.add('unknown');
+    } else if (status === 'up' && wasDown) {
+        el.classList.add('recovering');
+        setTimeout(() => el.classList.remove('recovering'), 1500);
+    }
+}
+
+function updateActiveServer(host) {
+    document.querySelectorAll('#topology-svg .host.active-server').forEach(el => {
+        el.classList.remove('active-server');
+    });
+    const el = host ? document.getElementById('host-' + host) : null;
+    if (el && !el.classList.contains('down')) el.classList.add('active-server');
+}
+
+function updateServerStatus(servers) {
+    if (!servers) return;
+    const down = [];
+    for (const host of ['h3', 'h4']) {
+        const s = servers[host];
+        if (!s) continue;
+        const status = s.alive === true ? 'up' : (s.alive === false ? 'down' : 'unknown');
+        if (status === 'down') down.push(host);
+        updateHostStatus(host, status);
+    }
+    const el = document.getElementById('server-status-text');
+    if (el) el.textContent = down.length ? `Server ${down.join(', ')} down` : 'Servers up';
+}
+
+function renderRetryRing(host) {
+    const g = flowLayer();
+    if (!g) return;
+    let ring = document.getElementById('retry-ring');
+    if (!host) {
+        if (ring) ring.remove();
+        return;
+    }
+    if (!ring) {
+        ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        ring.setAttribute('id', 'retry-ring');
+        ring.setAttribute('class', 'retry-ring');
+        ring.setAttribute('r', '34');
+        g.appendChild(ring);
+    }
+    const p = FLOW_NODES[host];
+    if (p) {
+        ring.setAttribute('cx', p.x);
+        ring.setAttribute('cy', p.y);
+    }
+}
+
 function updateLinkStatus(sw1, sw2, status) {
     // Link elements are stored in dashboard.html order (link-s1-s2); events
     // may name the pair either way round, so try both.
@@ -243,7 +348,7 @@ const FLOW_MESH = [['s1', 's2'], ['s1', 's3'], ['s1', 's4'],
 // server h3. The result payload does not name the receiving server, so h3 is
 // a documented assumption, not a measured fact.
 const FLOW_SRC = 'h1';
-const FLOW_DST = 'h3';
+let flowDest = 'h3';
 let flowDots = [];
 let flowPathKey = '';
 
@@ -257,6 +362,11 @@ function linkIsDown(a, b) {
     return el ? el.classList.contains('down') : false;
 }
 
+function hostIsDown(name) {
+    const el = document.getElementById('host-' + name);
+    return el ? el.classList.contains('down') : false;
+}
+
 function computeFlowPath(srcHost, dstHost) {
     // BFS: host -> its switch -> mesh (skipping down links) ->
     // destination switch -> host. Same shape of answer as the controller's
@@ -264,6 +374,7 @@ function computeFlowPath(srcHost, dstHost) {
     const srcSw = FLOW_ACCESS[srcHost];
     const dstSw = FLOW_ACCESS[dstHost];
     if (!srcSw || !dstSw) return null;
+    if (hostIsDown(srcHost) || hostIsDown(dstHost)) return null;
     if (linkIsDown(srcHost, srcSw) || linkIsDown(dstSw, dstHost)) return null;
     const prev = { [srcSw]: null };
     const queue = [srcSw];
@@ -343,11 +454,23 @@ function renderFlow(state) {
     // and the dots continue at the same fraction on the new route — the jump
     // *is* the reroute made visible.
     const total = Number(state.total_chunks) || 0;
+    const phase = state.phase || '';
+    if (phase !== 'retrying') {
+        if (state.server === 'h4') flowDest = 'h4';
+        else if (state.server === 'h3') flowDest = 'h3';
+    }
     if (!state.running || total <= 0) {
         clearFlow();
+        renderRetryRing(null);
         return;
     }
-    const nodes = computeFlowPath(FLOW_SRC, FLOW_DST);
+    if (phase === 'retrying') {
+        // Keep the last dots frozen at the last fraction; the ring shows why.
+        renderRetryRing(flowDest);
+        return;
+    }
+    renderRetryRing(null);
+    const nodes = computeFlowPath(FLOW_SRC, flowDest);
     if (!nodes) {
         clearFlow();
         return;
@@ -444,8 +567,13 @@ document.getElementById('btn-refresh-browse').addEventListener('click', loadBrow
 async function pollOnce() {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();
+    const rt = metrics.recovery_time;
+    const kind = metrics.recovery_kind;
+    const target = metrics.recovery_target;
     document.getElementById('recovery-value').textContent =
-        metrics.recovery_time ? `${metrics.recovery_time.toFixed(2)}s` : 'N/A';
+        rt != null
+            ? `${rt.toFixed(2)}s${kind ? ` (${kind}${target ? ' ' + target : ''})` : ''}`
+            : 'N/A';
     try {
         const res = await fetch('/api/transfer-result');
         const tr = await res.json();
@@ -474,6 +602,7 @@ async function pollOnce() {
                 document.getElementById('btn-start').disabled = transferRunning;
             }
         }
+        updateServerStatus(sdata.servers);
         const b = sdata.bridge;
         if (b) {
             const bridgeEl = document.getElementById('bridge-value');

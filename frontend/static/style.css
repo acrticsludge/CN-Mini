@@ -87,6 +87,36 @@ main {
     stroke: #e94560;
 }
 
+.host.active-server {
+    stroke: #7bf1c3;
+    stroke-width: 4;
+    filter: drop-shadow(0 0 6px rgba(123, 241, 195, 0.8));
+}
+
+.host.down {
+    stroke: #e94560;
+    fill: #3a1a2e;
+    animation: host-pulse-red 1.2s ease-in-out infinite;
+}
+
+.host.recovering {
+    stroke: #7bf1c3;
+    animation: host-flash-green 0.6s ease-in-out 2;
+}
+
+.host.unknown {
+    stroke: #666;
+    opacity: 0.6;
+}
+
+.retry-ring {
+    fill: none;
+    stroke: #f0a500;
+    stroke-width: 2;
+    stroke-dasharray: 4, 4;
+    animation: retry-spin 1.2s linear infinite;
+}
+
 .host-label {
     fill: #eee;
     font-size: 14px;
@@ -182,6 +212,19 @@ main {
 @keyframes barberpole {
     from { background-position: 1rem 0, 0 0; }
     to { background-position: 0 0, 0 0; }
+}
+
+#progress-bar.retrying {
+    background: repeating-linear-gradient(
+        45deg, #f0a500, #f0a500 10px, #b36b00 10px, #b36b00 20px);
+}
+
+#progress-bar.resuming {
+    background: linear-gradient(90deg, #4ecca3, #7bf1c3);
+}
+
+#progress-bar.failover {
+    background: #e94560;
 }
 
 #progress-bar.done {
@@ -293,6 +336,79 @@ main {
 .event-entry.evt-fail {
     color: #e94560;
     font-weight: bold;
+}
+
+.event-entry.evt-server {
+    color: #e94560;
+    border-left: 3px solid #e94560;
+    padding-left: 0.4rem;
+}
+
+.event-entry.evt-retry {
+    color: #f0a500;
+    border-left: 3px solid #f0a500;
+    padding-left: 0.4rem;
+}
+
+.event-entry.evt-resume {
+    color: #7bf1c3;
+    border-left: 3px solid #4ecca3;
+    padding-left: 0.4rem;
+}
+
+.event-entry.evt-failover {
+    color: #c792ea;
+    border-left: 3px solid #7b4fbf;
+    padding-left: 0.4rem;
+}
+
+.server-target {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: #aaa;
+    font-size: 0.8rem;
+    font-weight: bold;
+}
+
+.server-target select {
+    background: #0f3460;
+    color: #eee;
+    border: 1px solid #4ecca3;
+    border-radius: 4px;
+    padding: 0.35rem;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+@keyframes host-pulse-red {
+    0%, 100% { stroke-opacity: 1; }
+    50% { stroke-opacity: 0.3; }
+}
+
+@keyframes host-flash-green {
+    0%, 100% { stroke: #7bf1c3; }
+    50% { stroke: #4ecca3; }
+}
+
+@keyframes retry-spin {
+    to { stroke-dashoffset: -16; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .host.down, .host.recovering, .retry-ring, #progress-bar.retrying {
+        animation: none;
+    }
 }
 
 .event-timestamp {
