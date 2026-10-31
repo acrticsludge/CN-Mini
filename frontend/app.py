@@ -283,6 +283,7 @@ def _sync_transfer_state():
             _events_ingested = 0  # file was reset by a new transfer
         for entry in events[_events_ingested:]:
             event_log.append(entry)
+            print(entry, flush=True)
         _events_ingested = len(events)
         # Keep a generous tail; the dashboard renders the most recent ones.
         del event_log[:-EVENT_LOG_LIMIT]
@@ -293,6 +294,7 @@ def log_event(message):
     timestamp = time.strftime('%H:%M:%S')
     entry = f'[{timestamp}] {message}'
     event_log.append(entry)
+    print(entry, flush=True)
     socketio.emit('event', {'message': message, 'timestamp': timestamp})
 
 

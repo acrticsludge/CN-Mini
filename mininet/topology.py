@@ -137,6 +137,7 @@ def _run_topology():
     print('[TOPOLOGY] stored_files/ bind-mounted to h3,h4:/tmp/backup')
     print('[TOPOLOGY] shared_files/ bind-mounted to all hosts at /tmp/shared/')
     print('[TOPOLOGY] Bridge on h1; servers on h3:9000 and h4:9000')
+    print('[TOPOLOGY] Server logs: tail -f /tmp/server_h3.log /tmp/server_h4.log')
     print('[TOPOLOGY] Give it ~3s to bind, then check: mininet> pingall')
     print('[TOPOLOGY] Type "exit" in the prompt to stop')
 

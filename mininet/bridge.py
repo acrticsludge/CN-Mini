@@ -123,7 +123,8 @@ def write_heartbeat(started_at=None):
 
 
 def emit_event(message):
-    """Append an event line for the dashboard to pick up."""
+    """Append an event line for the dashboard and print it to the bridge terminal."""
+    print(message, flush=True)
     entry = f'[{time.strftime("%H:%M:%S")}] {message}'
     lines = []
     if os.path.exists(EVENTS_FILE):

@@ -117,3 +117,20 @@ def test_confirm_down_stops_when_server_answers(monkeypatch):
     logs = []
     assert serverctl.confirm_down('h3', interval=0, log=logs.append) is False
     assert len(logs) == 1
+
+
+def test_serve_reports_unexpected_exit(tmp_path, capsys):
+    class Flapping(FakeProc):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def poll(self):
+            self.calls += 1
+            return None if self.calls == 1 else 1
+
+    serverctl.serve_server_requests(
+        None, {'h3': Flapping(), 'h4': FakeProc(alive=False)},
+        str(tmp_path / 'request.json'), str(tmp_path / 'result.json'),
+        str(tmp_path / 'status.json'), poll=0, should_continue=lambda: False)
+    assert 'h3 exited unexpectedly' in capsys.readouterr().out

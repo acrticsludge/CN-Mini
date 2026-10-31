@@ -106,9 +106,15 @@ def server_status(procs):
 def serve_server_requests(net, procs, request_file, result_file, status_file,
                           poll=0.3, should_continue=None, interval=None):
     """Poll for kill/restart requests and keep server_status.json fresh."""
+    prev = server_status(procs)
     while True:
+        current = server_status(procs)
+        for host in HOST_IP:
+            if prev[host]['alive'] and not current[host]['alive']:
+                print(f'[SERVERCTL] {host} exited unexpectedly', flush=True)
+        prev = current
         status = {'checked_at': time.strftime('%H:%M:%S')}
-        status.update(server_status(procs))
+        status.update(current)
         write_json_atomic(status_file, status)
 
         if os.path.isfile(request_file):
@@ -120,6 +126,8 @@ def serve_server_requests(net, procs, request_file, result_file, status_file,
                 host, action = req.get('host'), req.get('action')
                 ok, message, state, confirmed = apply_server_state(
                     net, procs, host, action, interval=interval)
+                print(f'[SERVERCTL] {host} {action}: {message}', flush=True)
+                prev = server_status(procs)
                 result = {
                     'host': host, 'action': action, 'applied': ok,
                     'state': state, 'confirmed': confirmed,
