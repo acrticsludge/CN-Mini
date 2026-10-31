@@ -4,7 +4,7 @@ This report covers failures that threaten a backup itself: the server dying, the
 
 The focus is on cases a user can describe in one sentence. Protocol fuzzing, route flaps, and dashboard security are out of scope.
 
-This is a plan. None of the target behavior below is implemented yet.
+Case 1 is implemented on `edge-case-1`. Cases 2-8 are still planned.
 
 ## Current baseline
 

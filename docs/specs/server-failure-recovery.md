@@ -2,7 +2,7 @@
 
 **Project:** CN-Mini, Distributed Backup System
 **Edge case:** #1, server dies mid-transfer
-**Status:** Draft
+**Status:** Implemented on `edge-case-1`
 **Date:** 2026-10-31
 **Related:** `docs/edge-cases.md` (case 1), `docs/architecture.md`, `docs/codebase/`
 
@@ -74,13 +74,13 @@ running -> stopped
 
 | Constant                | Value | Why                                                         |
 | ----------------------- | ----- | ----------------------------------------------------------- |
-| `SERVER_WAIT_TIMEOUT`   | 30 s  | Time for a manual restart or a quick process crash recovery |
-| `SERVER_PROBE_INTERVAL` | 1 s   | TCP connect probe to `host:9000`                            |
+| `SERVER_PROBE_ATTEMPTS` | 2     | Two probes before confirming a failure                       |
+| `SERVER_PROBE_INTERVAL` | 5 s   | Gap between the two probes to `host:9000`                    |
 | `RETRY_ATTEMPTS`        | 2     | One same-server retry, then one failover                    |
 | `CLIENT_TIMEOUT`        | 300 s | Unchanged; per client attempt                               |
 | `TRANSFER_TIMEOUT`      | 60 s  | Unchanged; covers STP and TCP retransmission                |
 
-The bridge waits up to 30 s for the same server. If the TCP probe succeeds, it retries with `--resume N`. If the wait expires or the probe never succeeds, it fails over to h4 with `--resume 0`.
+The bridge probes the same server twice, 5 s apart. A probe that succeeds cancels the failover and retries with `--resume N`. Two failed probes start the h4 attempt with `--resume 0`.
 
 A cancel file stops the wait within 0.5 s.
 
@@ -164,7 +164,7 @@ The server must write each chunk at its own index, not at the current file posit
 attempt 1: default servers [h3, h4], resume 0
   on failed + resume_point:
     write phase=retrying, attempt=1, resume_from=resume_point, server=h3
-    wait for h3:9000 up to 30 s (cancel-aware, 1 s probe)
+    probe h3:9000 twice, 5 s apart (cancel-aware)
     if up: attempt 2 with --servers h3 --resume resume_point, phase=resuming
     else: attempt 2 with --servers h4 --resume 0, phase=failover
   on failed without resume_point: final failed
@@ -194,7 +194,7 @@ attempt 2:
 - Cancel: check `transfer_cancel.json` every 0.5 s during the wait. Write terminal progress with `cancelled: true`, `phase: "stopped"`, and return `stopped`. Do not start a new client.
 - Terminal progress: keep the last `chunk`, `total`, `throughput`, `server`, and `resume_from`, as `_write_terminal_progress` does today.
 - Result additions: `attempts`, `resumed_from`, `server`, `restarted_on_backup`, `downtime_s`.
-- Deadline: each client attempt gets its own 300 s. The 30 s wait is outside that budget. The whole run is still bounded by the two attempts plus the wait.
+- Deadline: each client attempt gets its own 300 s. The two probes are outside that budget. The whole run is still bounded by the two attempts plus the probe gap.
 
 ### 5.5 Server control inside Mininet
 
@@ -386,7 +386,8 @@ Lines the bridge writes:
 
 ```
 [SERVER] h3 down (confirmed by Mininet)
-[RETRY] h3 unreachable, attempt 1/2, waiting up to 30s
+[RETRY] Polling h3 (1/2)
+[RETRY] Polling h3 (2/2)
 [RESUME] h3 back; continuing at chunk 40/128
 [RECOVERY] Server h3 back after 8.4s; resumed at chunk 40
 [FAILOVER] h3 did not return; restarting on h4 from chunk 0
@@ -508,7 +509,7 @@ Browser          Flask            bridge(h1)          client            h3
   |                |                  |                  |               | socket closes
   |                |                  |<-- [RESUME_POINT] 40 ------------|
   |                |                  | phase=retrying   |               |
-  |                |                  | probe h3:9000 (1s, up to 30s)    |
+  |                |                  | probe h3:9000 twice, 5s apart    |
   | Restart h3     |                  |                  |               |
   |--------------->| server_request --|------------------|-------------->| start
   |                |                  | probe ok         |               |
@@ -524,7 +525,7 @@ Browser          Flask            bridge(h1)          client            h3
 
 ```
 bridge(h1)                         client                    h4
-  | wait for h3 30s (fails)          |                        |
+  | probe h3 twice, 5s apart (fails) |                        |
   | phase=failover                   |                        |
   | spawn client --servers h4 --resume 0                      |
   |                                  | HELLO resume_from=0    |
@@ -568,7 +569,7 @@ Browser POST /api/server-down
 | ----------------------------------------- | -------------------------------------------------------------------------- |
 | `test_retry_same_server_with_resume`      | First attempt fails at chunk 3; second call gets `--resume 3`; result done |
 | `test_failover_to_h4_starts_at_zero`      | h3 never returns; second call gets `--servers h4 --resume 0`               |
-| `test_retry_wait_respects_cancel`         | Cancel during the 30 s wait stops the loop, no new client                  |
+| `test_retry_wait_respects_cancel`         | Cancel during the two-probe wait stops the loop, no new client             |
 | `test_retry_budget_expires`               | h3 stays down; failover starts after the wait, not before                  |
 | `test_result_reports_attempts_and_resume` | `attempts`, `resumed_from`, `server`, `restarted_on_backup`                |
 | `test_progress_keeps_chunk_during_retry`  | Progress file has `phase=retrying`, old `chunk`, `running=true`            |
@@ -613,13 +614,13 @@ Browser POST /api/server-down
 3. Press **Kill Server h3**. The host turns red, the bar holds, the log says retrying.
 4. Wait 3-5 s, press **Restart h3**. The host flashes green, the bar continues from the same chunk, the log says `[RESUME]`.
 5. When it finishes, run `sha256sum shared_files/<file> stored_files/h3/<file>`. They match.
-6. Repeat, but leave h3 down. After 30 s the run restarts on h4 and completes. The log says `[FAILOVER]`.
+6. Repeat, but leave h3 down. After the two probes, 5 s apart, the run restarts on h4 and completes. The log says `[FAILOVER]`.
 
 ---
 
 ## 9. Acceptance criteria
 
-- [ ] Killing h3 at any chunk and restarting it within 30 s completes the same file.
+- [ ] Killing h3 at any chunk and restarting it before the second probe completes the same file.
 - [ ] The resumed run sends only chunks from `next_chunk` onward.
 - [ ] A lost ACK never duplicates or corrupts a chunk.
 - [ ] The dashboard shows h3 red, "retrying 1/2", and a frozen bar during the wait.
@@ -640,7 +641,7 @@ Browser POST /api/server-down
 - **Port reuse.** After `terminate`, wait for the process to exit before starting a new one. `SO_REUSEADDR` is set on the server, so a short TIME_WAIT is fine.
 - **Real host failure.** The button kills the process, so the socket closes and the client fails fast. A host blackhole still waits out the 60 s ACK timeout. Say that in the demo.
 - **Failover restarts from zero.** h4 has no partial file. Passing `--resume N` without the accepted-start ACK would corrupt it; the ACK change is what makes this safe.
-- **Retry budget.** The 30 s wait plus two client attempts must fit the demo. A 1 GB file may exceed the 300 s per-attempt deadline; the existing docs already say the big file is slow.
+- **Retry budget.** The 5 s probe gap plus two client attempts must fit the demo. A 1 GB file may exceed the 300 s per-attempt deadline; the existing docs already say the big file is slow.
 - **Status file staleness.** If `topology.py` dies, `server_status.json` goes stale. Treat older than 10 s as unknown, not down.
 - **Animation is illustrative.** The flow path is computed from the link classes on screen, not from the controller. The real path may be via s3 or s4. Keep the existing honesty comment.
 - **Case 3 interaction.** If the temp-file change from `edge-cases.md` case 3 lands first, resume must target the `.part` file. If it lands later, this spec works on the final filename. Pick one before implementation.
