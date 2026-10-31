@@ -110,9 +110,10 @@ main {
     opacity: 0.5;
 }
 
-.flow-layer.retrying .flow-dot {
-    fill: #f0a500;
-    opacity: 0.35;
+.flow-layer.retrying .flow-line {
+    stroke: #f0a500;
+    opacity: 0.45;
+    animation-play-state: paused;
 }
 
 .flow-layer.retrying .link.active {
@@ -156,13 +157,13 @@ main {
     stroke-width: 3.5;
 }
 
-.flow-dot {
-    fill: #4ecca3;
-    opacity: 0.95;
-}
-
-.flow-dot.trail {
-    opacity: 0.45;
+.flow-line {
+    fill: none;
+    stroke: #4ecca3;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-dasharray: 2 8;
+    animation: flow-dash 0.8s linear infinite;
 }
 
 /* Buttons */
@@ -408,12 +409,17 @@ main {
     50% { stroke: #4ecca3; }
 }
 
+@keyframes flow-dash {
+    to { stroke-dashoffset: -10; }
+}
+
 @keyframes retry-spin {
     to { stroke-dashoffset: -16; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .host.down, .host.recovering, .retry-ring, #progress-bar.retrying {
+    .host.down, .host.recovering, .retry-ring, .flow-line,
+    #progress-bar.retrying {
         animation: none;
     }
 }

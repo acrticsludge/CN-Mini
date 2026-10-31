@@ -348,7 +348,6 @@ const FLOW_MESH = [['s1', 's2'], ['s1', 's3'], ['s1', 's4'],
 // a documented assumption, not a measured fact.
 const FLOW_SRC = 'h1';
 let flowDest = 'h3';
-let flowDots = [];
 let flowPathKey = '';
 
 function linkElement(a, b) {
@@ -394,31 +393,33 @@ function flowLayer() {
     if (!g) {
         g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         g.setAttribute('id', 'flow-layer');
+        g.setAttribute('class', 'flow-layer');
         svg.appendChild(g);
     }
     return g;
 }
 
-function pointAlongPath(nodes, frac) {
-    const pts = nodes.map(n => FLOW_NODES[n]);
-    const segLens = [];
-    let total = 0;
-    for (let i = 0; i < pts.length - 1; i++) {
-        const len = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
-        segLens.push(len);
-        total += len;
-    }
-    if (total === 0) return pts[0];
-    let target = Math.min(Math.max(frac, 0), 1) * total;
-    for (let i = 0; i < segLens.length; i++) {
-        if (target <= segLens[i]) {
-            const t = segLens[i] === 0 ? 0 : target / segLens[i];
-            return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * t,
-                     y: pts[i].y + (pts[i + 1].y - pts[i].y) * t };
+function flowSegments(nodes) {
+    // Build each segment from the link's own endpoints, oriented in the
+    // direction of travel. Center-to-center points drift off diagonal links.
+    const parts = [];
+    for (let i = 0; i < nodes.length - 1; i++) {
+        const a = nodes[i];
+        const b = nodes[i + 1];
+        const el = linkElement(a, b);
+        const p = FLOW_NODES[a];
+        if (!el || !p) continue;
+        let x1 = Number(el.getAttribute('x1'));
+        let y1 = Number(el.getAttribute('y1'));
+        let x2 = Number(el.getAttribute('x2'));
+        let y2 = Number(el.getAttribute('y2'));
+        if (Math.hypot(x2 - p.x, y2 - p.y) < Math.hypot(x1 - p.x, y1 - p.y)) {
+            [x1, x2] = [x2, x1];
+            [y1, y2] = [y2, y1];
         }
-        target -= segLens[i];
+        parts.push(`M ${x1} ${y1} L ${x2} ${y2}`);
     }
-    return pts[pts.length - 1];
+    return parts.join(' ');
 }
 
 function clearFlow() {
@@ -427,7 +428,6 @@ function clearFlow() {
         g.innerHTML = '';
         g.classList.remove('retrying');
     }
-    flowDots = [];
     flowPathKey = '';
     document.querySelectorAll('#topology-svg .link.active').forEach(el => {
         el.classList.remove('active');
@@ -471,29 +471,16 @@ function renderFlow(state) {
     const g = flowLayer();
     if (!g) return;
     g.classList.toggle('retrying', retrying);
-    if (key !== flowPathKey || flowDots.length === 0) {
+    if (key !== flowPathKey) {
         g.innerHTML = '';
-        flowDots = [];
-        const specs = [{ r: 5, cls: 'flow-dot' },
-                       { r: 3.5, cls: 'flow-dot trail' },
-                       { r: 2.5, cls: 'flow-dot trail' }];
-        for (const s of specs) {
-            const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            c.setAttribute('r', s.r);
-            c.setAttribute('class', s.cls);
-            g.appendChild(c);
-            flowDots.push(c);
-        }
         flowPathKey = key;
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('id', 'flow-line');
+        path.setAttribute('class', 'flow-line');
+        path.setAttribute('d', flowSegments(nodes));
+        g.appendChild(path);
         highlightFlowPath(nodes);
     }
-    const frac = (Number(state.chunks_sent) || 0) / total;
-    const offsets = [0, 0.04, 0.08];
-    flowDots.forEach((dot, i) => {
-        const p = pointAlongPath(nodes, frac - offsets[i]);
-        dot.setAttribute('cx', p.x.toFixed(1));
-        dot.setAttribute('cy', p.y.toFixed(1));
-    });
     renderRetryRing(retrying ? flowDest : null);
 }
 
