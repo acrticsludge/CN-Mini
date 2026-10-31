@@ -4,6 +4,7 @@ Serves a single-page app with live topology, transfer control, metrics, and even
 """
 import json
 import os
+import sys
 import threading
 import time
 from flask import Flask, render_template, jsonify, request
@@ -16,6 +17,10 @@ socketio = SocketIO(
     cors_allowed_origins='*',
     async_mode='threading'
 )
+
+BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+sys.path.insert(0, BASE_DIR)
+from common.protocol import CHUNK_SIZE
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 STORED_DIR = os.path.join(BASE_DIR, 'stored_files')
@@ -332,6 +337,35 @@ def list_files():
     return jsonify(files)
 
 
+@app.route('/api/partial-files')
+def list_partial_files():
+    """List interrupted (.part) transfers on backup servers that can be resumed.
+
+    A .part file means a transfer was interrupted before completion. The resume
+    point is floor(size / CHUNK_SIZE): every complete chunk in the part file is
+    already stored, so the client resumes from that chunk index.
+    """
+    CHUNK_SIZE_LOCAL = CHUNK_SIZE
+    partials = {}
+    for server in ['h3', 'h4']:
+        path = os.path.join(STORED_DIR, server)
+        partials[server] = []
+        if os.path.exists(path):
+            for f in sorted(os.listdir(path)):
+                full = os.path.join(path, f)
+                if not f.endswith('.part') or not os.path.isfile(full):
+                    continue
+                size = os.path.getsize(full)
+                chunks = size // CHUNK_SIZE_LOCAL
+                partials[server].append({
+                    'name': f[:-5],  # strip .part suffix -> original filename
+                    'size': size,
+                    'chunks': chunks,
+                    'partial_name': f,
+                })
+    return jsonify(partials)
+
+
 @app.route('/api/browse')
 def browse_files():
     """List files in shared_files/ for the dashboard file picker."""
@@ -364,6 +398,7 @@ def start_transfer():
     """Queue a file transfer: writes a request the Mininet bridge picks up."""
     data = request.get_json(force=True, silent=True) or {}
     filename = data.get('filename') or os.path.basename(data.get('file_path', ''))
+    resume_from = int(data.get('resume_from', 0) or 0)
     if not filename or '..' in filename or '/' in filename or '\\' in filename:
         return jsonify({'error': 'Invalid filename'}), 400
 
@@ -388,7 +423,8 @@ def start_transfer():
                 os.unlink(p)
         request_id = _new_request_id()
         _write_json_atomic(REQUEST_FILE, {'filename': filename,
-                                          'request_id': request_id})
+                                          'request_id': request_id,
+                                          'resume_from': resume_from})
 
     # New run, new event file on the bridge side: reset the ingest cursor so
     # the fresh events are picked up from index 0. The dashboard's own history

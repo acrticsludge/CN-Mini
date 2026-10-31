@@ -1,0 +1,25 @@
+{
+  "name": "Distributed Backup System",
+  "floorRisk": "medium",
+  "mandatoryStages": [
+    0,
+    4,
+    5,
+    8,
+    9,
+    10
+  ],
+  "gates": {
+    "code": [
+      "python -m pytest -q"
+    ],
+    "visual": [
+      "node --check frontend/static/dashboard.js"
+    ]
+  },
+  "highRiskPaths": [
+    "controller/**",
+    "mininet/**"
+  ],
+  "visualRequired": "auto"
+}

@@ -169,7 +169,8 @@ def _write_terminal_progress(filename, request_id, running=False, cancelled=Fals
     if phase:
         entry['phase'] = phase
     if last:
-        for key in ('chunk', 'total', 'throughput', 'bytes', 'server'):
+        for key in ('chunk', 'total', 'throughput', 'bytes', 'server',
+                    'resume_from'):
             if key in last:
                 entry[key] = last[key]
     _write_json(PROGRESS_FILE, entry)
@@ -335,6 +336,7 @@ def process_request(request):
     """Run the transfer for the requested file. Returns a result dict."""
     filename = request.get('filename', '')
     request_id = request.get('request_id')
+    resume_from = int(request.get('resume_from', 0) or 0)
     if not filename or '..' in filename or '/' in filename or '\\' in filename:
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': 'Invalid filename'}
@@ -352,15 +354,17 @@ def process_request(request):
                                 'running': True, 'chunk': 0, 'total': 0,
                                 'throughput': 0.0, 'phase': 'running',
                                 'attempt': 1, 'max_attempts': 2,
-                                'resume_from': 0,
+                                'resume_from': resume_from,
                                 'server': server_name(SERVERS[0])})
     try:
-        first = run_client(filename, filepath, request_id)
+        first = run_client(filename, filepath, request_id,
+                           resume_from=resume_from)
     except Exception as e:
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': str(e)}
 
     first['attempts'] = 1
+    first['resumed_from'] = resume_from
     if first['status'] != 'failed' or first.get('resume_point') is None:
         _write_terminal_progress(filename, request_id, last=first,
                                  phase=first['status'])
@@ -398,6 +402,9 @@ def process_request(request):
         if second['status'] == 'done':
             _write_terminal_progress(filename, request_id, last=second, phase='done')
             return second
+        # Preserve the original resume point before falling through to failover.
+        if first.get('resume_point') and not second.get('resume_point'):
+            second['resume_point'] = first['resume_point']
         first = second  # same-server retry failed; fall through to h4
 
     backup = SERVERS[-1]
@@ -415,6 +422,10 @@ def process_request(request):
     second['server'] = backup_name
     second['restarted_on_backup'] = second['status'] == 'done'
     second['downtime_s'] = round(time.time() - fail_at, 1)
+    # Preserve the resume point from the first attempt if the failover attempt
+    # never got far enough to produce one (e.g. no server listening at all).
+    if second.get('resume_point') is None and first.get('resume_point'):
+        second['resume_point'] = first['resume_point']
     _write_terminal_progress(filename, request_id, last=second,
                              phase=second['status'])
     return second

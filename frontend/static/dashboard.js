@@ -39,6 +39,7 @@ let selectedFile = null;
 let lastResultSeen = null;
 let transferRunning = false;
 let startInFlight = false;
+let pendingPartial = null; // {name, chunks, server, partial_name} when a partial exists
 
 // Socket events (only when the library loaded; otherwise the polling below covers updates)
 if (socket) {
@@ -73,6 +74,20 @@ document.getElementById('btn-start').addEventListener('click', async () => {
         addEvent('Transfer already running — wait for it or press Stop');
         return;
     }
+
+    // Resume choice: if an interrupted (.part) transfer exists for this file,
+    // ask whether to resume from the last stored chunk or start over.
+    let resume_from = 0;
+    if (pendingPartial) {
+        const resume = window.confirm(
+            `Partial backup found for "${selectedFile}": ` +
+            `${pendingPartial.chunks} chunks already stored on ${pendingPartial.server}. ` +
+            `Resume from chunk ${pendingPartial.chunks}? (Cancel starts over.)`
+        );
+        resume_from = resume ? pendingPartial.chunks : 0;
+        pendingPartial = null; // choice consumed
+    }
+
     startInFlight = true;
     document.getElementById('btn-start').disabled = true;
     // Optimistic "Transferring…" right now — not on the next 2s tick — so the
@@ -84,7 +99,7 @@ document.getElementById('btn-start').addEventListener('click', async () => {
         const response = await fetch('/api/start-transfer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: selectedFile })
+            body: JSON.stringify({ filename: selectedFile, resume_from })
         });
         const result = await response.json();
         if (!response.ok || result.error) {
@@ -549,9 +564,32 @@ async function loadBrowse() {
             document.querySelectorAll('#browse-list .file-item').forEach(el => el.classList.remove('selected'));
             item.classList.add('selected');
             selectedFile = file.name;
+            pendingPartial = null; // reset until loadPartials confirms
             addEvent(`Selected: ${file.name}`);
         });
         list.appendChild(item);
+    }
+}
+
+async function loadPartials() {
+    try {
+        const response = await fetch('/api/partial-files');
+        const data = await response.json();
+        // Build a map: filename -> {server, chunks}
+        const map = {};
+        for (const server of ['h3', 'h4']) {
+            for (const p of (data[server] || [])) {
+                map[p.name] = { server, chunks: p.chunks, partial_name: p.partial_name };
+            }
+        }
+        // If a file is selected and has a partial, remember it.
+        if (selectedFile && map[selectedFile]) {
+            pendingPartial = map[selectedFile];
+        } else if (!selectedFile || !map[selectedFile]) {
+            pendingPartial = null;
+        }
+    } catch (e) {
+        // partials endpoint may not be available on older bridge versions
     }
 }
 
@@ -564,6 +602,7 @@ function formatSize(bytes) {
 // Initial load
 loadFiles();
 loadBrowse();
+loadPartials();
 document.getElementById('btn-refresh-browse').addEventListener('click', loadBrowse);
 async function pollOnce() {
     const response = await fetch('/api/metrics');
@@ -623,6 +662,7 @@ async function pollOnce() {
             div.textContent = entry;
             eventLog.appendChild(div);
         }
+        await loadPartials();
     } catch (e) { /* status not available yet */ }
 }
 setInterval(pollOnce, 2000);
