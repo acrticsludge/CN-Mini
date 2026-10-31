@@ -203,7 +203,7 @@ def test_server_restart_resumes_same_run(tmp_path):
             recv_frame(conn)              # HELLO
             conn.sendall(pack_ack(0))
             data = recv_frame(conn)       # chunk 0
-            (store / 'a.bin').write_bytes(data['payload'])
+            (store / 'a.bin.part').write_bytes(data['payload'])
             conn.sendall(pack_ack(data['index']))
         finally:
             conn.close()

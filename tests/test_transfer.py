@@ -280,7 +280,7 @@ class TestFileTransfer:
         _, port, storage = server
         content = b'E' * (CHUNK_SIZE * 3)
         name = 'partial.bin'
-        with open(os.path.join(storage, name), 'wb') as f:
+        with open(os.path.join(storage, name + '.part'), 'wb') as f:
             f.write(content[:CHUNK_SIZE * 2])
         client = BackupClient([('127.0.0.1', port)])
         client.connect()
@@ -295,14 +295,15 @@ class TestFileTransfer:
             client.close()
         with open(os.path.join(storage, name), 'rb') as f:
             assert f.read() == content
+        assert not os.path.exists(os.path.join(storage, name + '.part'))
 
     def test_resume_shorter_file_truncates_old_tail(self, server):
-        """A resume over a longer stored file must not keep the old tail."""
+        """A resume over a longer part file must not keep the old tail."""
         from client.client import BackupClient
         _, port, storage = server
         name = 'shorter.bin'
         new = b'N' * CHUNK_SIZE + b'Y' * CHUNK_SIZE
-        with open(os.path.join(storage, name), 'wb') as f:
+        with open(os.path.join(storage, name + '.part'), 'wb') as f:
             f.write(b'N' * CHUNK_SIZE + b'X' * (CHUNK_SIZE * 2))
         client = BackupClient([('127.0.0.1', port)])
         client.connect()
@@ -317,6 +318,7 @@ class TestFileTransfer:
             client.close()
         with open(os.path.join(storage, name), 'rb') as f:
             assert f.read() == new
+        assert not os.path.exists(os.path.join(storage, name + '.part'))
 
     def test_empty_file_completes(self, server):
         from client.client import BackupClient
@@ -332,3 +334,4 @@ class TestFileTransfer:
         path = os.path.join(storage, 'empty.bin')
         assert os.path.exists(path)
         assert os.path.getsize(path) == 0
+        assert not os.path.exists(path + '.part')

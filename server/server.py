@@ -35,6 +35,7 @@ class ClientHandler(threading.Thread):
         self.received = set()
         self.file_handle = None
         self.output_path = None
+        self.part_path = None
 
     def run(self):
         try:
@@ -77,33 +78,30 @@ class ClientHandler(threading.Thread):
         resume_from = int(info.get('resume_from', 0) or 0)
         self.total_chunks = (self.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         self.output_path = os.path.join(self.storage_dir, self.filename)
+        # The in-progress copy stays hidden from /api/files until it is whole.
+        self.part_path = self.output_path + '.part'
         os.makedirs(self.storage_dir, exist_ok=True)
 
         accepted = 0
-        if 0 < resume_from <= self.total_chunks and os.path.exists(self.output_path):
-            if os.path.getsize(self.output_path) >= resume_from * CHUNK_SIZE:
+        if 0 < resume_from <= self.total_chunks and os.path.exists(self.part_path):
+            if os.path.getsize(self.part_path) >= resume_from * CHUNK_SIZE:
                 accepted = resume_from
         self.received = set(range(accepted))
-        self.file_handle = open(self.output_path, 'r+b' if accepted else 'wb')
+        self.file_handle = open(self.part_path, 'r+b' if accepted else 'wb')
         if accepted:
             self.file_handle.seek(accepted * CHUNK_SIZE)
 
         self._start_time = time.time()
+        if self.file_size == 0:
+            self._finish()
+        elif accepted == self.total_chunks:
+            # The stored copy already covers the whole file. Drop any old tail.
+            self.file_handle.truncate(self.file_size)
+            self._finish()
         self.send_ack(accepted)
         mode = f'resume from chunk {accepted}' if accepted else 'fresh transfer'
         print(f"[SERVER] Receiving '{self.filename}' ({self.file_size} bytes, "
               f"{self.total_chunks} chunks, {mode}) from {self.addr}")
-
-        if self.file_size == 0:
-            self.file_handle.close()
-            self.file_handle = None
-            self._report_stored()
-        elif accepted == self.total_chunks:
-            # The stored copy already covers the whole file. Drop any old tail.
-            self.file_handle.truncate(self.file_size)
-            self.file_handle.close()
-            self.file_handle = None
-            self._report_stored()
 
     def _handle_data(self, frame):
         """Process DATA: verify CRC32, write at the chunk's index, send ACK."""
@@ -126,14 +124,14 @@ class ClientHandler(threading.Thread):
         self.file_handle.write(payload)
         self.file_handle.flush()
         self.received.add(index)
-        self.send_ack(index)
         if len(self.received) >= self.total_chunks:
-            # A resume can sit on a longer old file; cut the stale tail.
+            # A resume can sit on a longer old part file; cut the stale tail.
             self.file_handle.truncate(self.file_size)
             elapsed = time.time() - self._start_time
             print(f"[SERVER] Transfer complete: {self.filename} "
                   f"({len(self.received)} chunks in {elapsed:.2f}s)")
-            self._report_stored()
+            self._finish()
+        self.send_ack(index)
 
     def _handle_resume(self, frame):
         """Process RESUME: rewind to the resume point and confirm it to the client."""
@@ -149,6 +147,15 @@ class ClientHandler(threading.Thread):
         self.send_ack(last_ack)
         print(f"[SERVER] Resume confirmed from chunk {last_ack + 1} "
               f"(offset {(last_ack + 1) * CHUNK_SIZE} bytes)")
+
+    def _finish(self):
+        """Close the part file and atomically promote it to the final name."""
+        if self.file_handle:
+            self.file_handle.flush()
+            self.file_handle.close()
+            self.file_handle = None
+        os.replace(self.part_path, self.output_path)
+        self._report_stored()
 
     def _report_stored(self):
         """Emit a machine-readable receipt so the bridge can verify server-side."""

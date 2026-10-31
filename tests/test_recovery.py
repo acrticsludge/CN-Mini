@@ -91,7 +91,7 @@ class TestRecovery:
                     ack = recv_frame(client.sock)
                     assert ack is not None and unpack_ack(ack['payload']) == i
             received_path = os.path.join(storage, filename)
-            assert os.path.getsize(received_path) == 3 * CHUNK_SIZE
+            assert os.path.getsize(received_path + '.part') == 3 * CHUNK_SIZE
             client.sock.close()
 
             # Resume: the server must keep the first 3 chunks, not truncate them.
@@ -106,6 +106,7 @@ class TestRecovery:
             with open(received_path, 'rb') as f:
                 received = f.read()
             assert original == received
+            assert not os.path.exists(received_path + '.part')
         finally:
             os.unlink(path)
 
