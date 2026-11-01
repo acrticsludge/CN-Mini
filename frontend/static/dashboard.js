@@ -39,6 +39,7 @@ let selectedFile = null;
 let lastResultSeen = null;
 let transferRunning = false;
 let lastStorage = null;
+let lastQuotaHost = null;
 let startInFlight = false;
 let pendingPartial = null; // {name, chunks, server, partial_name} when a partial exists
 
@@ -407,11 +408,18 @@ function updateServerStatus(servers) {
 function updateStorage(storage) {
     if (!storage) return;
     lastStorage = storage;
-    // Prefill the quota input for the currently selected server.
+    // Prefill the quota input for the currently selected server, but never
+    // clobber a value the user is actively editing: only fill when the input
+    // is empty or the selected server changed.
     const selected = document.getElementById('server-target');
-    if (selected && storage[selected.value]) {
-        const input = document.getElementById('storage-quota');
-        if (input) input.value = storage[selected.value].quota_mb;
+    const input = document.getElementById('storage-quota');
+    if (!selected || !storage[selected.value] || !input) {
+        lastQuotaHost = null;
+        return;
+    }
+    if (selected.value !== lastQuotaHost || input.value === '') {
+        input.value = storage[selected.value].quota_mb;
+        lastQuotaHost = selected.value;
     }
     for (const host of ['h3', 'h4']) {
         const s = storage[host];
