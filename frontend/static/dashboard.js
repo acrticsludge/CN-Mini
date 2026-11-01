@@ -204,6 +204,58 @@ function addEvent(message) {
     log.scrollTop = log.scrollHeight;
 }
 
+const TRAFFIC_STALL_SECONDS = 5;
+let flowStatusKey = '';
+
+function trafficIdleSeconds(state) {
+    // The backend measures idle time from server-reported chunk advances, so a
+    // paused animation means no confirmed traffic rather than a slow browser.
+    const idle = Number(state.chunk_idle_s);
+    return Number.isFinite(idle) ? idle : null;
+}
+
+function isTrafficStalled(state) {
+    const sent = Number(state.chunks_sent) || 0;
+    const idle = trafficIdleSeconds(state);
+    return Boolean(state.running) && sent > 0 && idle !== null &&
+        idle >= TRAFFIC_STALL_SECONDS;
+}
+
+function setRouteStatus(message, mode) {
+    const el = document.getElementById('route-status');
+    if (!el) return;
+    // Update only when the route or its traffic state changes. Chunk and idle
+    // values already have dedicated metrics and would otherwise spam live
+    // regions every poll.
+    const key = `${mode}|${message}`;
+    if (key === flowStatusKey) return;
+    flowStatusKey = key;
+    el.textContent = message;
+    el.className = `route-status ${mode}`;
+}
+
+function updateRouteStatus(state, nodes, stalled) {
+    const total = Number(state.total_chunks) || 0;
+    if (!state.running || total <= 0) {
+        setRouteStatus('No active computed route.', 'idle');
+        return;
+    }
+    if (!nodes) {
+        setRouteStatus('No computed route around the failed link(s).', 'blocked');
+        return;
+    }
+    const route = `Computed route: ${nodes.join(' → ')}.`;
+    if ((Number(state.chunks_sent) || 0) <= 0) {
+        setRouteStatus(`${route} Waiting for the first confirmed chunk.`, 'awaiting');
+        return;
+    }
+    if (stalled) {
+        setRouteStatus(`${route} No chunk advance; waiting for path recovery.`, 'stalled');
+        return;
+    }
+    setRouteStatus(`${route} Traffic flowing.`, 'flowing');
+}
+
 function updateProgress(state) {
     // Defensive: a missing field must not throw. An exception inside the polling
     // callback would freeze this panel while the rest of the dashboard keeps ticking.
@@ -218,6 +270,8 @@ function updateProgress(state) {
     const total = Number(state.total_chunks) || 0;
     const tput = Number(state.throughput) || 0;
     const phase = state.phase || (state.running ? 'running' : '');
+    const idleSeconds = trafficIdleSeconds(state);
+    const trafficStalled = isTrafficStalled(state);
 
     updateActiveServer(state.server);
 
@@ -234,8 +288,14 @@ function updateProgress(state) {
         text.textContent = `Restarting on backup server ${state.server || 'h4'} — ${sent}/${total}`;
         bar.className = 'running failover';
     } else if (state.running) {
-        text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
-        bar.className = 'running';
+        if (trafficStalled) {
+            text.textContent = `Stalled at chunk ${sent}/${total} — no chunks for `
+                + `${idleSeconds.toFixed(0)}s; waiting for path recovery`;
+            bar.className = 'running stalled';
+        } else {
+            text.textContent = `Transferring ${state.filename}: ${progress.toFixed(1)}%`;
+            bar.className = 'running';
+        }
     } else if (state.result && state.result.status === 'done') {
         text.textContent = `Idle — last transfer ${state.filename} completed at `
             + `${state.completed_at || '--:--:--'} (CRC32 verified, ${tput.toFixed(0)} KB/s)`;
@@ -260,7 +320,7 @@ function updateProgress(state) {
     }
     chunks.textContent = `${sent} / ${total}`;
     throughput.textContent = `${tput.toFixed(1)} KB/s`;
-    renderFlow(state);
+    renderFlow(state, trafficStalled);
 
     // Update chart (skipped when the chart library failed to load)
     throughputData.push(tput);
@@ -478,11 +538,9 @@ function highlightFlowPath(nodes) {
     }
 }
 
-function renderFlow(state) {
-    // Dots ride the progress fraction, so the motion is honest: stalled
-    // progress means still dots. A mid-transfer reroute recomputes the path
-    // and the dots continue at the same fraction on the new route — the jump
-    // *is* the reroute made visible.
+function renderFlow(state, trafficStalled = false) {
+    // The SVG path is computed from local failed-link state, not measured
+    // traffic. Route text separately reports whether chunks have advanced.
     const total = Number(state.total_chunks) || 0;
     const phase = state.phase || '';
     if (phase !== 'retrying') {
@@ -491,6 +549,7 @@ function renderFlow(state) {
     }
     if (!state.running || total <= 0) {
         clearFlow();
+        updateRouteStatus(state, null, trafficStalled);
         renderRetryRing(null);
         return;
     }
@@ -498,6 +557,7 @@ function renderFlow(state) {
     const nodes = computeFlowPath(FLOW_SRC, flowDest);
     if (!nodes) {
         clearFlow();
+        updateRouteStatus(state, null, trafficStalled);
         renderRetryRing(null);
         return;
     }
@@ -505,6 +565,8 @@ function renderFlow(state) {
     const g = flowLayer();
     if (!g) return;
     g.classList.toggle('retrying', retrying);
+    g.classList.toggle('stalled', trafficStalled);
+    updateRouteStatus(state, nodes, trafficStalled);
     if (key !== flowPathKey) {
         g.innerHTML = '';
         flowPathKey = key;

@@ -58,6 +58,9 @@ transfer_state = {
     'resume_from': 0,
     'server': None,
     'retry_wait_s': None,
+    'last_chunk_at': None,
+    'chunk_idle_s': None,
+    'link_stall_warned': False,
     'result': None,
     'completed_at': None,
 }
@@ -72,11 +75,16 @@ _request_counter = 0
 # written progress. Older than this with no result, the run is presumed dead.
 PENDING_GRACE = 120
 
-# ACKs already in flight when the link dies can land a chunk just after the
-# down-confirm; counting that as "recovered" once logged a bogus 0.3 s and
+# A chunk advance within this window may be an in-flight ACK from before the
+# blackhole; counting that as "recovered" once logged a bogus 0.3 s and
 # spent the one-shot clock while the transfer then stalled forever. Advances
 # inside this window are stragglers: the clock keeps running.
 RECOVERY_STRAGGLER_GRACE = 3.0
+
+# A confirmed link outage with no later chunk movement is reported as a stall
+# after this longer window, so a flat progress bar is not mistaken for normal
+# rerouted traffic.
+LINK_STALL_GRACE = 5.0
 
 TERMINAL_STATUSES = ('done', 'failed', 'stopped')
 
@@ -198,6 +206,9 @@ def _sync_transfer_state():
     progress = _read_json(PROGRESS_FILE)
     if _matches_current(progress):
         prev_chunks = transfer_state.get('chunks_sent', 0)
+        now = time.time()
+        current_chunk = progress.get('chunk', 0)
+        transfer_state['chunk_idle_s'] = None
         transfer_state['running'] = bool(progress.get('running'))
         transfer_state['chunks_sent'] = progress.get('chunk', 0)
         transfer_state['total_chunks'] = progress.get('total', 0)
@@ -208,6 +219,11 @@ def _sync_transfer_state():
         transfer_state['resume_from'] = progress.get('resume_from', 0)
         transfer_state['server'] = progress.get('server')
         transfer_state['retry_wait_s'] = progress.get('retry_wait_s')
+        if current_chunk > prev_chunks:
+            transfer_state['last_chunk_at'] = now
+        last_chunk_at = transfer_state.get('last_chunk_at')
+        if current_chunk > 0 and last_chunk_at:
+            transfer_state['chunk_idle_s'] = round(now - last_chunk_at, 1)
         # The bar/text read state.progress, which used to be 0 for the whole
         # run and 100 at the end — so a 1 GB transfer sat at 0.0% for minutes
         # while chunks visibly flowed underneath it.
@@ -218,10 +234,10 @@ def _sync_transfer_state():
         # means traffic is flowing on the new path. The gap between the two
         # is the reroute time the demo needs — measured where traffic is
         # observable, since Flask cannot see inside the controller.
-        if (progress.get('chunk', 0) > prev_chunks
+        if (current_chunk > prev_chunks
                 and transfer_state.get('link_down_at') is not None
                 and transfer_state.get('recovery_time') is None):
-            dt = time.time() - transfer_state['link_down_at']
+            dt = now - transfer_state['link_down_at']
             if dt < RECOVERY_STRAGGLER_GRACE:
                 pass  # straggler ACK from before the blackhole; keep waiting
             else:
@@ -231,17 +247,32 @@ def _sync_transfer_state():
                 log_event(f"[RECOVERY] Traffic flowing again "
                           f"{dt:.1f}s after link down "
                           f"({transfer_state['filename']}: "
-                          f"chunk {progress.get('chunk', 0)}/{total})")
+                          f"chunk {current_chunk}/{total})")
+        # A stalled transfer needs its own explicit warning. The topology can
+        # already display an alternate route while no chunks are moving, so say
+        # that the route is unconfirmed traffic.
+        if (transfer_state.get('running')
+                and current_chunk > 0
+                and current_chunk <= prev_chunks
+                and transfer_state.get('link_down_at') is not None
+                and transfer_state.get('recovery_time') is None
+                and not transfer_state.get('link_stall_warned')):
+            dt = now - transfer_state['link_down_at']
+            if dt >= LINK_STALL_GRACE:
+                transfer_state['link_stall_warned'] = True
+                log_event(f"[LINK] {transfer_state.get('recovery_target')}: no "
+                          f"chunk advance for {dt:.0f}s; transfer stalled at "
+                          f"chunk {current_chunk}/{total}")
         # Server recovery uses the same clock and the same one-shot rule.
         if (progress.get('phase') == 'retrying'
                 and transfer_state.get('server_down_at') is None):
-            transfer_state['server_down_at'] = time.time()
+            transfer_state['server_down_at'] = now
             transfer_state['recovery_target'] = (
                 transfer_state.get('recovery_target') or progress.get('server'))
-        if (progress.get('chunk', 0) > prev_chunks
+        if (current_chunk > prev_chunks
                 and transfer_state.get('server_down_at') is not None
                 and transfer_state.get('recovery_time') is None):
-            dt = time.time() - transfer_state['server_down_at']
+            dt = now - transfer_state['server_down_at']
             if dt >= RECOVERY_STRAGGLER_GRACE:
                 target = (transfer_state.get('recovery_target')
                           or progress.get('server') or transfer_state.get('server'))
@@ -254,11 +285,11 @@ def _sync_transfer_state():
                     transfer_state['recovery_target'] = f'{target}->{current}'
                     log_event(f"[RECOVERY] {target} did not return; {current} "
                               f"took over after {dt:.1f}s "
-                              f"(chunk {progress.get('chunk', 0)}/{total})")
+                              f"(chunk {current_chunk}/{total})")
                 else:
                     transfer_state['recovery_target'] = target
                     log_event(f"[RECOVERY] Server {target} back after {dt:.1f}s; "
-                              f"resumed at chunk {progress.get('chunk', 0)}/{total}")
+                              f"resumed at chunk {current_chunk}/{total}")
         if not progress.get('running') and not progress.get('cancelled'):
             transfer_state['progress'] = 100
 
@@ -453,6 +484,9 @@ def start_transfer():
     transfer_state['resume_from'] = 0
     transfer_state['server'] = None
     transfer_state['retry_wait_s'] = None
+    transfer_state['last_chunk_at'] = None
+    transfer_state['chunk_idle_s'] = None
+    transfer_state['link_stall_warned'] = False
     # The previous transfer's result is intentionally kept out of the new run's
     # state, but its metrics stay visible in the panel until this one finishes.
     transfer_state['completed_at'] = None
@@ -540,6 +574,7 @@ def _request_link(sw1, sw2, state):
             transfer_state['recovery_time'] = None
             transfer_state['recovery_kind'] = 'link'
             transfer_state['recovery_target'] = f'{sw1}-{sw2}'
+            transfer_state['link_stall_warned'] = False
         log_event(f'[LINK] {verb}: {sw1} <-> {sw2} confirmed by Mininet')
         socketio.emit('link_event', {'sw1': sw1, 'sw2': sw2, 'status': state})
         return jsonify({'status': state, 'sw1': sw1, 'sw2': sw2, 'applied': True})

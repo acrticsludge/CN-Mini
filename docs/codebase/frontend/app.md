@@ -8,7 +8,7 @@ Flask + Flask-SocketIO (`async_mode='threading'`). Serves the page and every
 
 - `transfer_state` — `running, filename, request_id, progress, chunks_sent,
   total_chunks, throughput, start_time, recovery_time, duration, link_down_at,
-  result, completed_at`.
+  last_chunk_at, chunk_idle_s, link_stall_warned, result, completed_at`.
 - `_read_json` (tolerant) / `_write_json_atomic` (tmp + replace — the bridge
   must never read a half-written request).
 - `_new_request_id()` — unique id per click (`ms-pid-counter`), minted under
@@ -17,7 +17,10 @@ Flask + Flask-SocketIO (`async_mode='threading'`). Serves the page and every
   `link_down_at`; the next chunk advance stamps `recovery_time` and logs the
   `[RECOVERY]` line (traffic flowing again after Xs). Advances within
   `RECOVERY_STRAGGLER_GRACE` (3 s) are ignored as in-flight stragglers — one
-  once logged a bogus 0.3 s and spent the one-shot clock. First sight of a
+  once logged a bogus 0.3 s and spent the one-shot clock. A transfer with no
+  chunk advance for `LINK_STALL_GRACE` (5 s) logs a one-shot `[LINK]` stall
+  warning, so a flat bar is not mistaken for resumed traffic. Chunk advances
+  also stamp `last_chunk_at`; the UI uses `chunk_idle_s` for the stalled state. First sight of a
   result stamps `duration` and logs `[DONE]` (chunks, seconds, KB/s) or
   `[FAIL]` (error, seconds). Severities are marker prefixes the UI maps to
   colors.

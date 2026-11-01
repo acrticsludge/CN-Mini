@@ -261,13 +261,19 @@ SERVER_STATUS_FILE = os.path.join(SHARED_DIR, 'server_status.json')
   {
     "transfer": { "...", "phase": "retrying", "attempt": 1,
                   "max_attempts": 2, "resume_from": 40,
-                  "server": "h3", "retry_wait_s": 4.2 },
+                  "server": "h3", "retry_wait_s": 4.2,
+                  "chunk_idle_s": 12.3, "link_stall_warned": true },
     "servers": { "h3": {"alive": false, "pid": 1234, "age_s": 1.2},
                  "h4": {"alive": true, "pid": 1235, "age_s": 1.2} },
     "events": [], "bridge": {}
   }
   ```
 - `_sync_transfer_state()` copies the new progress fields into `transfer_state`.
+- Chunk advances stamp `last_chunk_at`; `/api/status` exposes `chunk_idle_s`.
+  If a running transfer has confirmed chunks and no advance for 5 s after a
+  confirmed link-down, log a one-shot `[LINK]` stall line and set
+  `link_stall_warned`. Reset that flag on a new transfer and on each new link
+  failure.
 - `/api/metrics` returns `recovery_time`, `recovery_kind` (`link` or `server`), `throughput`, and `progress`. The Metrics panel shows the latest value with its kind.
 - Recovery clock:
   - Add `server_down_at`, `server_recovery_time`, `recovery_kind`.
@@ -365,6 +371,8 @@ The current animation is progress-driven. `renderFlow(state)` uses `chunks_sent 
 - When `phase === 'failover'`, set `flowDest = 'h4'`, rebuild the dashed route, and let the dashes run. The first progress line switches the phase to `running`, so the bar moves.
 - When the transfer resumes on h3, `phase === 'resuming'`, the route rebuilds to h3 and the dashes run again. The jump back to the h3 route is the visible recovery.
 - The active server gets the blue `.host.active-server` border; on failover it moves to h4.
+- Add a `#route-status` label beneath the topology. It always calls the line a computed route and reports its observed state: `idle`, `blocked`, `awaiting`, `flowing`, or `stalled`. Text changes only on state changes, not on every chunk, so screen readers are not spammed.
+- When backend `chunk_idle_s` is at least 5 s, pause the dashed route, show the stalled bar state, and say which chunk has not advanced. This distinguishes "no traffic on the new path" from "traffic resumed."
 - On `done` / `failed` / `stopped`, clear the flow as today.
 
 Honesty note: the path is computed from the link classes on screen, not from the controller. The real path may differ. The existing code already says this; keep the comment.
@@ -378,6 +386,7 @@ Honesty note: the path is computed from the link classes on screen, not from the
 | `running`  | `Transferring big.bin: 31.2%`                                | `.running`, width = progress               |
 | `retrying` | `h3 unreachable, retrying 1/2 (chunk 40/128)`                | `.running .retrying`, width stays at 31.2% |
 | `resuming` | `Resuming at chunk 40/128`                                   | `.running .resuming`, width stays          |
+| `running, stalled` | `Stalled at chunk 40/128 — no chunks for 12s; waiting …` | `.running .stalled`, width stays           |
 | `failover` | `Restarting on backup server h4 — sent/total`; the first chunk switches to `Transferring ...` | `.running .failover`, width follows progress |
 | `done`     | `Idle — last transfer ... completed ...`                     | reset to 0, as today                       |
 | `failed`   | `Idle — last transfer ... failed (server h3 did not return)` | reset                                      |

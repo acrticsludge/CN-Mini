@@ -212,6 +212,40 @@ def test_straggler_advance_does_not_spend_recovery(dash):
     assert sum('[RECOVERY]' in e for e in dash.event_log) == 1
 
 
+def test_link_stall_is_warned_once(dash):
+    """A flat chunk count after link-down gets an explicit stall warning."""
+    import time
+    client = dash.app.test_client()
+    assert client.post('/api/start-transfer', json={'filename': 'a.bin'}).status_code == 200
+    with open(dash.PROGRESS_FILE, 'w') as f:
+        json.dump({'filename': 'a.bin', 'running': True, 'chunk': 5,
+                   'total': 10, 'throughput': 1.0}, f)
+    client.get('/api/status')
+    old = time.time() - 10
+    dash.transfer_state.update({
+        'link_down_at': old,
+        'last_chunk_at': old,
+        'link_stall_warned': False,
+        'recovery_target': 's1-s2',
+    })
+    state = client.get('/api/status').get_json()['transfer']
+    assert state['chunk_idle_s'] >= 10
+    assert any('no chunk advance' in e for e in dash.event_log)
+    client.get('/api/status')
+    assert sum('no chunk advance' in e for e in dash.event_log) == 1
+
+
+def test_dashboard_template_labels_computed_route(dash):
+    """The topology route indicator must remain part of the rendered page."""
+    del dash
+    template = os.path.join(os.path.dirname(__file__), '..', 'frontend',
+                            'templates', 'dashboard.html')
+    with open(template, encoding='utf-8') as f:
+        html = f.read()
+    assert 'id="route-status"' in html
+    assert 'No active computed route.' in html
+
+
 def test_done_logs_duration_summary(dash):
     """First sight of done logs one [DONE] line with chunks, seconds, speed."""
     client = dash.app.test_client()

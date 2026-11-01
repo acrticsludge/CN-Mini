@@ -9,7 +9,8 @@ rather than vendored.
 
 - `socket` (nullable), `throughputChart` (Chart.js or null — every chart call
   is guarded), `selectedFile`, `lastResultSeen`, `transferRunning`,
-  `startInFlight` (double-click guard while the POST is in flight).
+  `startInFlight` (double-click guard while the POST is in flight),
+  `flowStatusKey` (suppresses repeated route announcements).
 
 ## Handlers
 
@@ -25,10 +26,15 @@ rather than vendored.
 
 - `updateProgress(state)` — defensive (`state || {}`, numeric coercion so one
   bad field can't freeze the panel): running → `Transferring f: p%` + striped
-  bar; done/failed/stopped → **bar reset to idle**, history kept in the text
-  line (`Idle — last transfer … completed/failed at …`); plus chunks,
+  bar; traffic stalled for at least 5 s → `Stalled at chunk …` + paused
+  striped bar; done/failed/stopped → **bar reset to idle**, history kept in
+  the text line (`Idle — last transfer … completed/failed at …`); plus chunks,
   throughput, and chart history push.
 - `updateLinkStatus(sw1, sw2, status)` — toggles the SVG link's `down` class.
+- `updateRouteStatus(state, nodes, stalled)` — labels the dashed path as
+  computed, not measured: no active route, no usable route, awaiting first
+  chunk, flowing, or stalled. Route text only updates on state changes, not on
+  every chunk. The dashed animation also pauses while stalled.
 - `loadFiles()` — stored-files panel from `/api/files`. `loadBrowse()` —
   picker with click-to-select. `formatSize()` — B/KB/MB.
 - `pollOnce()` (every 2 s + once on load + after Start): recovery metric,
@@ -43,9 +49,10 @@ rather than vendored.
 
 `throughput-chart`, `progress-bar`, `progress-text`, `chunks-value`,
 `throughput-value`, `recovery-value`, `bridge-value`, `files-list`,
-`browse-list`, `btn-start|stop|link-down|link-up|refresh-files|refresh-browse`,
+`browse-list`, `route-status`, `btn-start|stop|link-down|link-up|refresh-files|refresh-browse`,
 `event-log`, `link-s1-s2` (and siblings). Rename an ID in one file without the
-other and that panel silently stops updating — there is no test covering the
-HTML↔JS seam (JS is syntax-checked with `node --check`, not unit-tested).
+other and that panel silently stops updating — a template regression test pins
+`route-status`, while the rest of the HTML↔JS seam is still only checked with
+`node --check` (JS is syntax-checked, not unit-tested).
 Note: `.done/.failed/.stopped` CSS classes exist but are currently unused —
 terminal states reset the bar to `''` by design.

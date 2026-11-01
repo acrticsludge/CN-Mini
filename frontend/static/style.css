@@ -116,6 +116,10 @@ main {
     animation-play-state: paused;
 }
 
+.flow-layer.stalled .flow-line {
+    animation-play-state: paused;
+}
+
 .flow-layer.retrying .link.active {
     stroke: #f0a500;
     stroke-width: 2;
@@ -155,6 +159,32 @@ main {
 .link.active {
     stroke: #7bf1c3;
     stroke-width: 3.5;
+}
+
+.route-status {
+    margin: 0.5rem 0 0;
+    font-size: 0.8rem;
+    color: #aaa;
+}
+
+.route-status.flowing {
+    color: #7bf1c3;
+}
+
+.route-status.stalled {
+    color: #f0a500;
+    font-weight: bold;
+}
+
+.route-status.blocked {
+    color: #e94560;
+    font-weight: bold;
+}
+
+#progress-bar.stalled {
+    background: repeating-linear-gradient(
+        45deg, #f0a500, #f0a500 10px, #532f00 10px, #532f00 20px);
+    animation: none;
 }
 
 .flow-line {
@@ -419,7 +449,7 @@ main {
 
 @media (prefers-reduced-motion: reduce) {
     .host.down, .host.recovering, .retry-ring, .flow-line,
-    #progress-bar.retrying {
+    #progress-bar.retrying, #progress-bar.stalled {
         animation: none;
     }
 }
