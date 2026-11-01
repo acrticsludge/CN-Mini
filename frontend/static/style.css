@@ -87,6 +87,30 @@ main {
     stroke: #e94560;
 }
 
+.host.storage-full {
+    stroke: #e94560;
+    stroke-width: 4;
+    fill: #5b1a1a;
+    filter: drop-shadow(0 0 6px rgba(233, 69, 96, 0.8));
+}
+
+.host.storage-low {
+    stroke: #f0a500;
+    stroke-width: 4;
+    fill: #4a3a0a;
+    filter: drop-shadow(0 0 6px rgba(240, 165, 0, 0.7));
+}
+
+.host.storage-full.storage-low {
+    stroke: #e94560;
+}
+
+.host-storage {
+    fill: #aaa;
+    font-size: 10px;
+    pointer-events: none;
+}
+
 .host.active-server {
     stroke: #4ea8de;
     stroke-width: 4;
@@ -268,6 +292,17 @@ main {
 
 #progress-bar.failover {
     background: #e94560;
+}
+
+#progress-bar.storage-full {
+    background: #e94560;
+    animation: barberpole 0.8s linear infinite;
+    background-image:
+        linear-gradient(45deg, rgba(255, 255, 255, 0.25) 25%, transparent 25%,
+                        transparent 50%, rgba(255, 255, 255, 0.25) 50%,
+                        rgba(255, 255, 255, 0.25) 75%, transparent 75%),
+        linear-gradient(90deg, #e94560, #b33448);
+    background-size: 1rem 1rem, auto;
 }
 
 #progress-bar.done {

@@ -49,10 +49,12 @@
                     <rect x="520" y="50" width="80" height="50" rx="8" class="host server" id="host-h3"/>
                     <text x="560" y="80" text-anchor="middle" class="host-label">h3</text>
                     <text x="560" y="95" text-anchor="middle" class="host-role">server</text>
+                    <text x="560" y="110" text-anchor="middle" class="host-storage" id="host-storage-h3">—</text>
 
                     <rect x="520" y="250" width="80" height="50" rx="8" class="host server" id="host-h4"/>
                     <text x="560" y="280" text-anchor="middle" class="host-label">h4</text>
                     <text x="560" y="295" text-anchor="middle" class="host-role">server</text>
+                    <text x="560" y="310" text-anchor="middle" class="host-storage" id="host-storage-h4">—</text>
                 </g>
 
                 <!-- Links -->
@@ -125,6 +127,14 @@
             <div class="metric">
                 <span class="metric-label">Bridge:</span>
                 <span id="bridge-value" class="metric-value">unknown</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Storage h3:</span>
+                <span id="storage-h3" class="metric-value">—</span>
+            </div>
+            <div class="metric">
+                <span class="metric-label">Storage h4:</span>
+                <span id="storage-h4" class="metric-value">—</span>
             </div>
             <canvas id="throughput-chart" width="400" height="200"></canvas>
         </section>

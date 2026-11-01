@@ -325,6 +325,16 @@ def _can_connect(addr, timeout=1):
         return False
 
 
+def _is_storage_error(result):
+    """True when the client aborted because the target server cannot store the file.
+
+    The server is up (reachable) but its disk is full / read-only, so retrying on
+    it would only fail again. Fail straight to the backup server from chunk 0.
+    """
+    error = result.get('error') or ''
+    return 'Server storage error' in error
+
+
 def _sleep_cancel(seconds, request_id):
     end = time.time() + seconds
     while time.time() < end:
@@ -433,10 +443,36 @@ def process_request(request):
 
     first['attempts'] = 1
     first['resumed_from'] = resume_from
-    if first['status'] != 'failed' or first.get('resume_point') is None:
+    storage_error = _is_storage_error(first)
+    if first['status'] != 'failed' or (first.get('resume_point') is None
+                                       and not storage_error):
         _write_terminal_progress(filename, request_id, last=first,
                                  phase=first['status'])
         return first
+
+    # A storage-full error means the target server is up but cannot store the
+    # file. Do not wait for it or retry on it — fail straight to the backup
+    # server, starting at chunk 0.
+    if storage_error:
+        server = first.get('server') or server_name(SERVERS[0])
+        addr = first.get('server_addr') or SERVERS[0]
+        backup = SERVERS[-1] if server_name(addr) == server_name(SERVERS[0]) \
+            else SERVERS[0]
+        backup_name = server_name(backup)
+        emit_event(f'[FAILOVER] {server} storage full; restarting on '
+                   f'{backup_name} from chunk 0')
+        _write_retry_progress(filename, request_id, first, 'failover', 2, 0,
+                              backup_name)
+        second = run_client(filename, filepath, request_id, servers=[backup],
+                            resume_from=0, attempt=2)
+        second['attempts'] = 2
+        second['resumed_from'] = 0
+        second['server'] = backup_name
+        second['restarted_on_backup'] = second['status'] == 'done'
+        second['downtime_s'] = 0.0
+        _write_terminal_progress(filename, request_id, last=second,
+                                 phase=second['status'])
+        return second
 
     fail_at = time.time()
     server = first.get('server') or server_name(SERVERS[0])
