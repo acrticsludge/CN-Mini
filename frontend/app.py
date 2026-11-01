@@ -218,8 +218,8 @@ def _save_storage_quotas(quotas):
     _write_json_atomic(SERVER_STORAGE_FILE, quotas)
 
 
-def _used_mb(host):
-    """Sum of non-.part bytes stored for a host, in whole MB."""
+def _used_bytes(host):
+    """Sum of non-.part bytes stored for a host (raw bytes, for capacity checks)."""
     path = os.path.join(STORED_DIR, host)
     total = 0
     if os.path.isdir(path):
@@ -230,7 +230,12 @@ def _used_mb(host):
                     total += os.path.getsize(full)
                 except OSError:
                     pass
-    return total // (1024 * 1024)
+    return total
+
+
+def _used_mb(host):
+    """Sum of non-.part bytes stored for a host, in whole MB (display only)."""
+    return _used_bytes(host) // (1024 * 1024)
 
 
 def _storage_snapshot():
@@ -490,24 +495,30 @@ def start_transfer():
     if not os.path.isfile(src):
         return jsonify({'error': f'File not found in shared_files/: {filename}'}), 404
     file_size = os.path.getsize(src)
-    need_mb = (file_size + 1024 * 1024 - 1) // (1024 * 1024)  # MB, rounded up
+    MB = 1024 * 1024
 
-    def _is_full(free_mb):
+    def _free_bytes(host, quota_mb):
+        # Bytes still available on a host. None means unlimited (quota 0).
         # size == free space is allowed; only strictly-insufficient is full.
-        return free_mb is not None and need_mb > free_mb
+        if quota_mb == 0:
+            return None
+        return max(quota_mb * MB - _used_bytes(host), 0)
+
+    def _is_full(free_bytes):
+        return free_bytes is not None and file_size > free_bytes
 
     storage = _storage_snapshot()
-    target_free = storage[target]['free_mb']
+    target_free = _free_bytes(target, storage[target]['quota_mb'])
     other = 'h4' if target == 'h3' else 'h3'
-    other_free = storage[other]['free_mb']
+    other_free = _free_bytes(other, storage[other]['quota_mb'])
     routed_to = target
     if _is_full(target_free):
         if _is_full(other_free):
             log_event(f'[STORAGE] Both servers full — cannot store {filename} '
-                      f'(need {need_mb} MB)')
+                      f'(need {file_size} bytes)')
             return jsonify({'error': f'Both servers full — cannot store {filename}'}), 409
-        log_event(f'[STORAGE] {target} full for {filename} (need {need_mb} MB, '
-                  f'have {target_free} MB); routing to {other}')
+        log_event(f'[STORAGE] {target} full for {filename} (need {file_size} bytes, '
+                  f'have {target_free} bytes); routing to {other}')
         routed_to = other
 
     with _start_lock:

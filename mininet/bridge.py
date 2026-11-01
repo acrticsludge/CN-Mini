@@ -424,6 +424,27 @@ def process_request(request):
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': 'File not found'}
 
+    # Honor the server host the dashboard chose (e.g. after auto-routing
+    # around a full target). h3 -> SERVERS[0], h4 -> SERVERS[1], positional so
+    # runtime BACKUP_SERVERS overrides are honored without a hard-coded name map.
+    # A requested host that isn't configured is rejected rather than silently
+    # falling back to the other address.
+    host = request.get('host')
+    servers = SERVERS
+    if host == 'h3':
+        if not servers:
+            return {'filename': filename, 'request_id': request_id,
+                    'status': 'failed',
+                    'error': 'No backup servers configured'}
+        servers = [servers[0]]
+    elif host == 'h4':
+        if len(servers) < 2:
+            return {'filename': filename, 'request_id': request_id,
+                    'status': 'failed',
+                    'error': 'Backup server h4 not configured'}
+        servers = [servers[1]]
+    # No host field -> use the full configured server order.
+
     clear_transfer_files()
     # Pickup marker BEFORE the client runs: the dashboard's busy check must see
     # this run from the moment it is claimed, not from the first [PROGRESS]
@@ -433,9 +454,9 @@ def process_request(request):
                                 'throughput': 0.0, 'phase': 'running',
                                 'attempt': 1, 'max_attempts': 2,
                                 'resume_from': resume_from,
-                                'server': server_name(SERVERS[0])})
+                                'server': server_name(servers[0])})
     try:
-        first = run_client(filename, filepath, request_id,
+        first = run_client(filename, filepath, request_id, servers=servers,
                            resume_from=resume_from)
     except Exception as e:
         return {'filename': filename, 'request_id': request_id,
@@ -452,12 +473,23 @@ def process_request(request):
 
     # A storage-full error means the target server is up but cannot store the
     # file. Do not wait for it or retry on it — fail straight to the backup
-    # server, starting at chunk 0.
+    # server (the positional opposite of the failed one), starting at chunk 0.
     if storage_error:
         server = first.get('server') or server_name(SERVERS[0])
         addr = first.get('server_addr') or SERVERS[0]
-        backup = SERVERS[-1] if server_name(addr) == server_name(SERVERS[0]) \
-            else SERVERS[0]
+        try:
+            failed_idx = SERVERS.index(addr)
+        except ValueError:
+            failed_idx = 0
+        backup_idx = 1 if failed_idx == 0 else 0
+        if backup_idx >= len(SERVERS):
+            # No alternate server to fail over to; report and fail the run.
+            emit_event(f'[STORAGE] {server} storage full and no alternate '
+                       f'server configured — cannot store {filename}')
+            _write_terminal_progress(filename, request_id, last=first,
+                                     phase=first['status'])
+            return first
+        backup = SERVERS[backup_idx]
         backup_name = server_name(backup)
         emit_event(f'[FAILOVER] {server} storage full; restarting on '
                    f'{backup_name} from chunk 0')
