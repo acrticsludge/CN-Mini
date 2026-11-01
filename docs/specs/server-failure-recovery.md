@@ -74,13 +74,16 @@ running -> stopped
 
 | Constant                | Value | Why                                                         |
 | ----------------------- | ----- | ----------------------------------------------------------- |
-| `SERVER_PROBE_ATTEMPTS` | 2     | Two probes before confirming a failure                       |
-| `SERVER_PROBE_INTERVAL` | 5 s   | Gap between the two probes to `host:9000`                    |
+| `SERVER_PROBE_ATTEMPTS` | 2     | Two probes before consulting server process state                      |
+| `SERVER_PROBE_INTERVAL` | 5 s   | Gap between the two probes to `host:9000`                             |
+| `LINK_RECOVERY_WAIT`    | 60 s  | Extra bounded wait when TCP fails but h3 is still alive               |
+| `SERVER_STATUS_MAX_AGE` | 10 s  | Older server-process state is unknown, not evidence of death        |
+| `HEARTBEAT_INTERVAL`    | 2 s   | Fixed bridge heartbeat during client output stalls                   |
 | `RETRY_ATTEMPTS`        | 2     | One same-server retry, then one failover                    |
 | `CLIENT_TIMEOUT`        | 300 s | Unchanged; per client attempt                               |
 | `TRANSFER_TIMEOUT`      | 60 s  | Unchanged; covers STP and TCP retransmission                |
 
-The bridge probes the same server twice, 5 s apart. A probe that succeeds cancels the failover and retries with `--resume N`. Two failed probes start the h4 attempt with `--resume 0`.
+The bridge probes the same server twice, 5 s apart. A probe that succeeds cancels the failover and retries with `--resume N`. If both probes fail, the bridge reads fresh `server_status.json`: an alive h3 means the path may still be converging, so it waits up to 60 s for TCP to recover instead of declaring the server dead. Only a dead/stale process, a newly dead process, or expiry of the path wait starts the h4 attempt with `--resume 0`.
 
 A cancel file stops the wait within 0.5 s.
 
@@ -168,6 +171,9 @@ attempt 1: default servers [h3, h4], resume 0
     write phase=retrying, attempt=1, resume_from=resume_point, server=h3
     probe h3:9000 twice, 5 s apart (cancel-aware)
     if up: attempt 2 with --servers h3 --resume resume_point, phase=resuming
+    if down and fresh server_status.json says h3 is alive:
+      wait up to 60 s for the path, honoring Stop and h3 death;
+      if the path recovers, attempt 2 with --servers h3 --resume resume_point
     else: attempt 2 with --servers h4 --resume 0, phase=failover
   on failed without resume_point: final failed
   on done: final done
@@ -197,7 +203,7 @@ attempt 2:
 - Cancel: check `transfer_cancel.json` every 0.5 s during the wait. Write terminal progress with `cancelled: true`, `phase: "stopped"`, and return `stopped`. Do not start a new client.
 - Terminal progress: keep the last `chunk`, `total`, `throughput`, `server`, and `resume_from`, as `_write_terminal_progress` does today.
 - Result additions: `attempts`, `resumed_from`, `server`, `restarted_on_backup`, `downtime_s`.
-- Deadline: each client attempt gets its own 300 s. The two probes are outside that budget. The whole run is still bounded by the two attempts plus the probe gap.
+- Deadline: each client attempt gets its own 300 s. The two probes and a possible 60 s path wait are outside that budget. The whole run is still bounded by the two attempts plus those waits.
 
 ### 5.5 Server control inside Mininet
 
@@ -398,9 +404,10 @@ Lines the bridge writes:
 [SERVER] h3 down (confirmed by Mininet)
 [RETRY] Polling h3 (1/2)
 [RETRY] Polling h3 (2/2)
+[LINK] h3 process state says alive, but its path is unreachable by TCP; waiting for the network to recover
 [RESUME] h3 back; continuing at chunk 40/128
 [RECOVERY] Server h3 back after 8.4s; resumed at chunk 40
-[FAILOVER] h3 did not return; restarting on h4 from chunk 0
+[FAILOVER] h3 stayed unreachable after path wait; restarting on h4 from chunk 0
 [DONE] Transfer done: big.bin — 128/128 chunks in 41.2s at ...
 ```
 
@@ -538,6 +545,9 @@ Browser          Flask            bridge(h1)          client            h3
   |                |                  |<-- [RESUME_POINT] 40 ------------|
   |                |                  | phase=retrying   |               |
   |                |                  | probe h3:9000 twice, 5s apart    |
+  |                |                  | check fresh server_status.json: |
+  |                |                  | h3 process alive but TCP down   |
+  |                |                  | wait for path recovery          |
   | Restart h3     |                  |                  |               |
   |--------------->| server_request --|------------------|-------------->| start
   |                |                  | probe ok         |               |
@@ -553,8 +563,9 @@ Browser          Flask            bridge(h1)          client            h3
 
 ```
 bridge(h1)                         client                    h4
-  | probe h3 twice, 5s apart (fails) |                        |
-  | phase=failover                   |                        |
+  | probe h3 twice, 5s apart (fails) but process is alive |              |
+  | path wait up to 60s (still fails)                |                        |
+  | phase=failover                                   |                        |
   | spawn client --servers h4 --resume 0                      |
   |                                  | HELLO resume_from=0    |
   |                                  |----------------------->| ACK(0)
@@ -598,6 +609,9 @@ Browser POST /api/server-down
 | `test_retry_same_server_with_resume`      | First attempt fails at chunk 3; second call gets `--resume 3`; result done |
 | `test_failover_to_h4_starts_at_zero`      | h3 never returns; second call gets `--servers h4 --resume 0`               |
 | `test_retry_wait_respects_cancel`         | Cancel during the two-probe wait stops the loop, no new client             |
+| `test_path_wait_honors_cancel`              | Cancel during path recovery stops the loop, no new client                  |
+| `test_process_alive_blocks_failover_to_backup` | Live server + unreachable TCP retries h3 instead of starting h4         |
+| `test_process_dead_allows_failover_to_backup`  | Confirmed-dead server starts the h4 attempt from chunk 0                |
 | `test_retry_budget_expires`               | h3 stays down; failover starts after the wait, not before                  |
 | `test_result_reports_attempts_and_resume` | `attempts`, `resumed_from`, `server`, `restarted_on_backup`                |
 | `test_progress_keeps_chunk_during_retry`  | Progress file has `phase=retrying`, old `chunk`, `running=true`            |

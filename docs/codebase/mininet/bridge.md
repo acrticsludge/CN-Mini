@@ -25,9 +25,11 @@ results back out as JSON files. It is the only link between the dashboard
   "stored but UI says failed" symptom). Older = corpse → reclaim. Liveness is
   file freshness, never a pid probe (portable Linux/Windows).
 - `write_heartbeat(started_at=None)` — writes `bridge_alive.json` and touches
-  the lock. Called every idle poll **and every ~2 s from inside `run_client`**:
-  without the latter, a multi-minute transfer starves the heartbeat and the
-  dashboard declares the bridge dead mid-run.
+  the lock. Called every idle poll **and every 2 s by a timer thread inside
+  `run_client`**: without the timer, a stalled ACK leaves no client output and
+  the dashboard declares the bridge dead mid-run.
+- `_heartbeat_loop(stop)` — the fixed-interval worker behind that timer. It
+  stops when the client attempt returns.
 - `report_namespace()` — derives h1's IP via a UDP `connect` trick and warns
   unless it is `10.0.0.1`. A mislaunched bridge is visible in one log line
   instead of twenty failed connects.
@@ -39,6 +41,9 @@ results back out as JSON files. It is the only link between the dashboard
   the file to exist, clears bookkeeping (**never the request itself** — that
   race ate clicks), writes a running pickup marker *before* the client runs
   (closes the busy-check blind window), runs, echoes `request_id` in the result.
+  After a resume-point failure it retries the original server; h4 failover
+  requires a dead/unknown server process or expiry of the path-recovery wait,
+  so a rerouted-but-unconverged link does not count as server death.
 - `run_client(filename, filepath, request_id)` — spawns the client with
   `--transfer-timeout` from `BRIDGE_TRANSFER_TIMEOUT` (default 60 s — must
   cover STP reconvergence, see `client.md`), parses stdout:
@@ -48,6 +53,13 @@ results back out as JSON files. It is the only link between the dashboard
   and a configurable deadline. Terminal progress carries the **last live
   values** (otherwise metrics zero at completion) with `running: False`.
   Returns `(status, error)`; `done` requires exit 0 **and** `[COMPLETE]`.
+- `_server_process_state(host)` — reads the topology's `server_status.json`.
+  A fresh `alive: true` means TCP failure is probably a path outage, not server
+  death; stale/missing state is unknown.
+- `_wait_for_path(...)` — after two failed TCP probes, waits up to
+  `BRIDGE_LINK_RECOVERY_WAIT` (default 60 s) when the server process is alive.
+  It checks for Stop and for a newly dead process on each cycle, so it can fail
+  over promptly if h3 actually exits during the wait.
 - `clear_transfer_files()` / `_write_terminal_progress()` / `emit_event()` /
   `_write_json()` — small helpers; all writes atomic (`tmp` + `os.replace`).
 

@@ -15,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
@@ -48,6 +49,15 @@ CLIENT_TIMEOUT = float(os.environ.get('BRIDGE_TIMEOUT', '300'))
 TRANSFER_TIMEOUT = os.environ.get('BRIDGE_TRANSFER_TIMEOUT', '60')
 # Two probes, five seconds apart, before a failure is confirmed.
 PROBE_INTERVAL = float(os.environ.get('SERVER_PROBE_INTERVAL', '5'))
+# Heartbeats must tick on a fixed interval, not only when the client prints.
+HEARTBEAT_INTERVAL = float(os.environ.get('BRIDGE_HEARTBEAT_INTERVAL', '2'))
+# The watcher keeps server_status.json fresh every 0.3 s; older than this is
+# unknown, not proof either way.
+SERVER_STATUS_FILE = os.path.join(SHARED_DIR, 'server_status.json')
+SERVER_STATUS_MAX_AGE = 10.0
+# A reachable-server path can lag the controller's new route while STP unblocks
+# the alternate links. Do not call the backup server dead after two TCP probes.
+LINK_RECOVERY_WAIT = float(os.environ.get('BRIDGE_LINK_RECOVERY_WAIT', '60'))
 SERVER_NAMES = {'10.0.0.3': 'h3', '10.0.0.4': 'h4'}
 
 
@@ -65,6 +75,15 @@ def _write_json(path, data):
     with open(tmp, 'w') as f:
         json.dump(data, f)
     os.replace(tmp, path)
+
+
+def _read_json(path):
+    """Read a JSON file, returning None when missing or unparseable."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
 
 
 def claim_bridge_lock(max_age=10):
@@ -176,6 +195,12 @@ def _write_terminal_progress(filename, request_id, running=False, cancelled=Fals
     _write_json(PROGRESS_FILE, entry)
 
 
+def _heartbeat_loop(stop):
+    """Write heartbeats on a timer, including while client output stalls."""
+    while not stop.wait(HEARTBEAT_INTERVAL):
+        write_heartbeat()
+
+
 def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
                attempt=1):
     """Run one client attempt. Returns a dict for the retry loop.
@@ -195,12 +220,15 @@ def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
                             text=True, bufsize=1)
     completed = False
     last_error = None
-    last_hb = 0
     deadline = time.time() + CLIENT_TIMEOUT
     result = {'filename': filename, 'request_id': request_id,
               'status': 'failed', 'error': None, 'resume_point': None,
               'server': server_name(servers[0]), 'server_addr': servers[0],
               'chunk': 0, 'total': 0, 'throughput': 0.0}
+    stop_heartbeat = threading.Event()
+    heartbeat = threading.Thread(target=_heartbeat_loop,
+                                 args=(stop_heartbeat,), daemon=True)
+    heartbeat.start()
 
     try:
         for line in proc.stdout:
@@ -260,17 +288,13 @@ def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
                 emit_event(f'Client timed out after {CLIENT_TIMEOUT:.0f}s')
                 proc.kill()
                 break
-            # Heartbeat from inside the run (throttled: a 1 GB file emits
-            # 131072 progress lines; the alive file does not need all of them).
-            now = time.time()
-            if now - last_hb >= 2:
-                write_heartbeat()
-                last_hb = now
     finally:
+        stop_heartbeat.set()
         try:
             proc.wait(timeout=10)
         except Exception:
             proc.kill()
+        heartbeat.join(timeout=2)
 
     if os.path.exists(CANCEL_FILE):
         os.unlink(CANCEL_FILE)
@@ -320,6 +344,50 @@ def _wait_for_server(addr, request_id):
         if i == 1 and not _sleep_cancel(PROBE_INTERVAL, request_id):
             return 'cancelled'
     return 'down'
+
+
+def _server_process_state(host, now=None):
+    """Return True/False/None for a server process that is alive/dead/unknown.
+
+    TCP probes cannot make this distinction when the network itself is down:
+    they fail even when h3 is healthy. The topology watcher already records the
+    process state in server_status.json.
+    """
+    now = time.time() if now is None else now
+    info = _read_json(SERVER_STATUS_FILE)
+    try:
+        age = now - os.path.getmtime(SERVER_STATUS_FILE)
+    except OSError:
+        return None
+    if age is None or age > SERVER_STATUS_MAX_AGE:
+        return None
+    alive = (info or {}).get(host, {}).get('alive')
+    if alive is True:
+        return True
+    if alive is False:
+        return False
+    return None
+
+
+def _wait_for_path(addr, server, request_id, timeout=None):
+    """Wait for a live server's network path to recover, with cancel checks.
+
+    The topology watcher updates server_status.json independently of TCP, so a
+    server that dies during the wait can fail over without waiting out the
+    whole link-recovery window.
+    """
+    if timeout is None:
+        timeout = LINK_RECOVERY_WAIT
+    deadline = time.time() + timeout
+    while True:
+        if _can_connect(addr):
+            return 'up'
+        if _server_process_state(server) is False:
+            return 'down'
+        if time.time() >= deadline:
+            return 'down'
+        if not _sleep_cancel(PROBE_INTERVAL, request_id):
+            return 'cancelled'
 
 
 def _write_retry_progress(filename, request_id, result, phase, attempt,
@@ -377,6 +445,15 @@ def process_request(request):
     _write_retry_progress(filename, request_id, first, 'retrying', 1,
                           resume_from, server)
     status = _wait_for_server(addr, request_id)
+    waited_for_path = False
+
+    if status == 'down' and _server_process_state(server) is True:
+        # A failed probe does not mean a failed server when the controller is
+        # still rerouting or STP is still unblocking the alternate links.
+        waited_for_path = True
+        emit_event(f'[LINK] {server} process state says alive, but its path is '
+                   f'unreachable by TCP; waiting for the network to recover')
+        status = _wait_for_path(addr, server, request_id)
 
     if status == 'cancelled':
         _write_terminal_progress(filename, request_id, cancelled=True, last=first,
@@ -411,8 +488,12 @@ def process_request(request):
     if server == server_name(backup):
         backup = SERVERS[0]
     backup_name = server_name(backup)
-    emit_event(f'[FAILOVER] {server} down confirmed; restarting on '
-               f'{backup_name} from chunk 0')
+    if waited_for_path:
+        emit_event(f'[FAILOVER] {server} stayed unreachable after path wait; '
+                   f'restarting on {backup_name} from chunk 0')
+    else:
+        emit_event(f'[FAILOVER] {server} down confirmed; restarting on '
+                   f'{backup_name} from chunk 0')
     _write_retry_progress(filename, request_id, first, 'failover', 2, 0,
                           backup_name)
     second = run_client(filename, filepath, request_id, servers=[backup],
