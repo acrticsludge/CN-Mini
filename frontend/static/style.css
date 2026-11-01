@@ -457,6 +457,15 @@ main {
     padding: 0.35rem;
 }
 
+#storage-quota {
+    background: #0f3460;
+    color: #eee;
+    border: 1px solid #4ecca3;
+    border-radius: 4px;
+    padding: 0.35rem;
+    width: 4.5rem;
+}
+
 .sr-only {
     position: absolute;
     width: 1px;

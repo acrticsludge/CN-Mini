@@ -174,6 +174,28 @@ document.getElementById('btn-server-up').addEventListener('click', async () => {
     if (result.applied) updateHostStatus(host, 'up');
 });
 
+document.getElementById('btn-set-quota').addEventListener('click', async () => {
+    const host = document.getElementById('server-target').value;
+    const input = document.getElementById('storage-quota');
+    const quota_mb = Number(input.value);
+    if (!Number.isFinite(quota_mb) || quota_mb < 0) {
+        addEvent(`Invalid quota for ${host}`);
+        return;
+    }
+    const response = await fetch('/api/storage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host, quota_mb })
+    });
+    const result = await response.json();
+    if (!response.ok || result.error) {
+        addEvent(`Set quota ${host}: ${result.error || response.status}`);
+        return;
+    }
+    addEvent(`Quota ${host}: ${quota_mb} MB${quota_mb === 0 ? ' (unlimited)' : ''}`);
+    await loadStorage();
+});
+
 document.getElementById('btn-refresh-files').addEventListener('click', loadFiles);
 
 // Functions
@@ -385,6 +407,12 @@ function updateServerStatus(servers) {
 function updateStorage(storage) {
     if (!storage) return;
     lastStorage = storage;
+    // Prefill the quota input for the currently selected server.
+    const selected = document.getElementById('server-target');
+    if (selected && storage[selected.value]) {
+        const input = document.getElementById('storage-quota');
+        if (input) input.value = storage[selected.value].quota_mb;
+    }
     for (const host of ['h3', 'h4']) {
         const s = storage[host];
         if (!s) continue;
@@ -742,7 +770,10 @@ loadFiles();
 loadBrowse();
 loadPartials();
 document.getElementById('btn-refresh-browse').addEventListener('click', loadBrowse);
-document.getElementById('server-target').addEventListener('change', loadPartials);
+document.getElementById('server-target').addEventListener('change', async () => {
+    await loadPartials();
+    await loadStorage();
+});
 async function pollOnce() {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();

@@ -89,6 +89,10 @@
                         <option value="h4">h4</option>
                     </select>
                 </label>
+                <label class="server-target" for="storage-quota">Quota (MB)
+                    <input type="number" id="storage-quota" min="0" value="1000" />
+                </label>
+                <button id="btn-set-quota" class="btn btn-secondary">Set Quota</button>
                 <button id="btn-server-down" class="btn btn-danger">Kill Server</button>
                 <button id="btn-server-up" class="btn btn-success">Restart Server</button>
             </div>
