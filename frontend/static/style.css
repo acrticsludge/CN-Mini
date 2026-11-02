@@ -228,6 +228,24 @@ main {
     margin-bottom: 1rem;
 }
 
+.button-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.group-label {
+    font-size: 0.7rem;
+    color: #aaa;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
 .btn {
     padding: 0.5rem 1rem;
     border: none;

@@ -21,6 +21,10 @@ import time
 BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
 CLIENT_SCRIPT = os.path.join(BASE_DIR, 'client', 'client.py')
 
+# CHUNK_SIZE must match common.protocol (8 KB). Duplicated here so the bridge
+# can validate resume offsets without importing the common package.
+CHUNK_SIZE = 8192
+
 # Inside Mininet, shared_files/ is bind-mounted at /tmp/shared/.
 # Outside Mininet (host testing), fall back to the repo directory.
 SHARED_DIR = os.environ.get(
@@ -339,12 +343,40 @@ def _is_storage_error(result):
     return 'Server storage error' in error
 
 
-def _server_free_bytes(host):
-    """Return free bytes for a host from server_storage.json.
+def _disk_used_bytes(host):
+    """Bytes consumed on disk for a host, including .part files.
 
-    None means unlimited (quota 0) or unknown. Computed from the persisted
-    quota_mb and used_mb so the bridge can refuse a failover to a server that
-    cannot actually hold the file.
+    .part files are counted because they occupy disk space that a failover
+    transfer (which always starts at chunk 0 on the backup server) needs.
+    Excluding them would let failover proceed onto a server whose disk is
+    actually full of orphaned partial transfers.
+    """
+    path = os.path.join(BASE_DIR, 'stored_files', host)
+    total = 0
+    if os.path.isdir(path):
+        for name in os.listdir(path):
+            full = os.path.join(path, name)
+            if os.path.isfile(full):
+                try:
+                    total += os.path.getsize(full)
+                except OSError:
+                    pass
+    return total
+
+
+def _server_free_bytes(host):
+    """Return free bytes for a host: quota (from server_storage.json) minus
+    real disk usage in stored_files/<host>, recomputed on every call.
+
+    None means unlimited (quota 0) or unknown (no quota entry for the host).
+
+    The old version trusted used_mb from server_storage.json, which is only
+    refreshed on quota set. A server whose disk filled through transfers still
+    looked empty, so failover would send a file to a server that cannot hold
+    it (e.g. kill h4 mid-transfer, swap to h3 which has less space, and the
+    bytes still land on h3 and fail there). Disk usage is now read live so the
+    bridge refuses failover to a full backup server instead of discovering it
+    after the client connects.
     """
     try:
         data = _read_json(SERVER_STORAGE_FILE)
@@ -357,19 +389,16 @@ def _server_free_bytes(host):
         return None
     if isinstance(entry, dict):
         quota = entry.get('quota_mb')
-        used = entry.get('used_mb', 0)
     else:
         # Old flat format {host: quota_mb}.
         quota = entry
-        used = 0
     try:
         quota = int(quota)
-        used = int(used)
     except (TypeError, ValueError):
         return None
     if quota == 0:
         return None  # unlimited
-    return max(quota * 1024 * 1024 - used * 1024 * 1024, 0)
+    return max(quota * 1024 * 1024 - _disk_used_bytes(host), 0)
 
 
 def _sleep_cancel(seconds, request_id):
@@ -461,6 +490,13 @@ def process_request(request):
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': 'File not found'}
     file_size = os.path.getsize(filepath)
+    total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE if CHUNK_SIZE else 0
+
+    # Clamp resume_from to a valid chunk range. A value beyond total_chunks
+    # (stale bridge state, corrupted request file) would make the client seek
+    # past EOF and report success with zero bytes sent.
+    if total_chunks and resume_from > total_chunks:
+        resume_from = total_chunks
 
     # Honor the server host the dashboard chose (e.g. after auto-routing
     # around a full target). h3 -> SERVERS[0], h4 -> SERVERS[1], positional so

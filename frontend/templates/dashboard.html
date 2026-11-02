@@ -79,22 +79,35 @@
         <section class="panel" id="control-panel">
             <h2>Transfer Control</h2>
             <div class="button-group">
-                <button id="btn-start" class="btn btn-primary">Start Transfer</button>
-                <button id="btn-stop" class="btn btn-danger">Stop Transfer</button>
-                <button id="btn-link-down" class="btn btn-warning">Trigger Link Failure</button>
-                <button id="btn-link-up" class="btn btn-success">Restore Link</button>
-                <label class="server-target" for="server-target">Server
+                <div class="button-row">
+                    <label class="group-label">Transfer</label>
+                    <button id="btn-start" class="btn btn-primary">Start Transfer</button>
+                    <button id="btn-stop" class="btn btn-danger">Stop Transfer</button>
+                </div>
+                <div class="button-row">
+                    <label class="group-label">Target</label>
+                    <label class="server-target" for="server-target">Server</label>
                     <select id="server-target">
                         <option value="h3" selected>h3</option>
                         <option value="h4">h4</option>
                     </select>
-                </label>
-                <label class="server-target" for="storage-quota">Quota (MB)
+                </div>
+                <div class="button-row">
+                    <label class="group-label">Link</label>
+                    <button id="btn-link-down" class="btn btn-warning">Trigger Link Failure</button>
+                    <button id="btn-link-up" class="btn btn-success">Restore Link</button>
+                </div>
+                <div class="button-row">
+                    <label class="group-label">Server</label>
+                    <button id="btn-server-down" class="btn btn-danger">Kill Server</button>
+                    <button id="btn-server-up" class="btn btn-success">Restart Server</button>
+                </div>
+                <div class="button-row">
+                    <label class="group-label">Storage</label>
+                    <label class="server-target" for="storage-quota">Quota (MB)</label>
                     <input type="number" id="storage-quota" min="0" />
-                </label>
-                <button id="btn-set-quota" class="btn btn-secondary">Set Quota</button>
-                <button id="btn-server-down" class="btn btn-danger">Kill Server</button>
-                <button id="btn-server-up" class="btn btn-success">Restart Server</button>
+                    <button id="btn-set-quota" class="btn btn-secondary">Set Quota</button>
+                </div>
             </div>
             <div id="progress-container">
                 <div id="progress-bar"></div>

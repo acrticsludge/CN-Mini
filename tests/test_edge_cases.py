@@ -860,3 +860,223 @@ def test_both_servers_unreachable_reports_clear_reason(tmp_path):
         client.close()
 
     assert ok is False
+
+
+def test_bridge_failover_blocks_when_backup_disk_is_full(tmp_path):
+    """Failover uses real disk usage, not the stale quota-JSON used_mb.
+
+    Regression for: transfer to h4, kill it mid-way, failover swaps to h3
+    which has less space yet the bytes were still sent there.
+
+    h3's server_storage.json says used_mb=0 (10 MB quota looks fully free),
+    but 9 MB of completed files sit in stored_files/h3, so real free is 1 MB.
+    A 5 MB file failing over from h4 to h3 must be blocked: run_client must
+    never be invoked with h3's address, and the run fails with a clear reason
+    instead of connecting to h3 and dying there.
+    """
+    bridge, shared = _make_bridge(tmp_path, 'bridge_failover_real_disk_space')
+    captured = []
+
+    def fake_run_client(filename, filepath, request_id=None, servers=None,
+                        resume_from=0, attempt=1):
+        captured.append(list(servers or []))
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed', 'error': '[CLIENT] Connection lost at chunk 1',
+                'resume_point': 1, 'server': 'h4',
+                'server_addr': '10.0.0.4:9000', 'chunk': 1, 'total': 256}
+
+    bridge.run_client = fake_run_client
+    bridge.BASE_DIR = str(tmp_path)
+    bridge._wait_for_server = lambda addr, request_id: 'down'
+    bridge._server_process_state = lambda host, now=None: False
+
+    os.makedirs(os.path.join(tmp_path, 'stored_files', 'h3'), exist_ok=True)
+    with open(os.path.join(tmp_path, 'stored_files', 'h3', 'filler.bin'), 'wb') as f:
+        f.write(b'z' * (9 * MB))  # disk really holds 9 MB
+
+    with open(bridge.SERVER_STORAGE_FILE, 'w') as f:
+        json.dump({'h3': {'quota_mb': 10, 'used_mb': 0},
+                   'h4': {'quota_mb': 1000, 'used_mb': 0}}, f)
+    with open(os.path.join(shared, 'a.bin'), 'wb') as f:
+        f.write(b'x' * (5 * MB))  # needs 5 MB; h3 has only 1 MB free
+
+    res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1',
+                                  'host': 'h4'})
+    assert res['status'] == 'failed', res
+    assert ['10.0.0.3:9000'] not in captured, captured
+    with open(bridge.EVENTS_FILE) as f:
+        events = '\\n'.join(json.load(f))
+    assert 'h3 also lacks space' in events, events
+
+
+def test_bridge_failover_proceeds_when_backup_disk_has_space(tmp_path):
+    """A stale high used_mb in the quota JSON must not block failover.
+
+    h3's JSON says used_mb=10 MB (quota 10 MB -> looks full), but stored_files
+    is empty so real free is 10 MB. A 5 MB file failing over to h3 proceeds.
+    """
+    bridge, shared = _make_bridge(tmp_path, 'bridge_failover_disk_empty')
+    captured = []
+
+    def fake_run_client(filename, filepath, request_id=None, servers=None,
+                        resume_from=0, attempt=1):
+        captured.append(list(servers or []))
+        # First attempt (h4) fails mid-transfer; failover (h3) succeeds.
+        if len(captured) == 1:
+            return {'filename': filename, 'request_id': request_id,
+                    'status': 'failed', 'error': '[CLIENT] Connection lost',
+                    'resume_point': 1, 'server': 'h4',
+                    'server_addr': '10.0.0.4:9000', 'chunk': 1, 'total': 256}
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'done', 'error': None}
+
+    bridge.run_client = fake_run_client
+    bridge.BASE_DIR = str(tmp_path)
+    bridge._wait_for_server = lambda addr, request_id: 'down'
+    bridge._server_process_state = lambda host, now=None: False
+
+    os.makedirs(os.path.join(tmp_path, 'stored_files', 'h3'), exist_ok=True)
+    with open(bridge.SERVER_STORAGE_FILE, 'w') as f:
+        json.dump({'h3': {'quota_mb': 10, 'used_mb': 10},
+                   'h4': {'quota_mb': 1000, 'used_mb': 0}}, f)
+    with open(os.path.join(shared, 'a.bin'), 'wb') as f:
+        f.write(b'x' * (5 * MB))
+
+    res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1',
+                                  'host': 'h4'})
+    assert res['status'] == 'done', res
+    assert ['10.0.0.3:9000'] in captured, captured
+
+
+def test_bridge_clamps_resume_from_beyond_total_chunks(tmp_path):
+    """resume_from beyond total_chunks is clamped instead of seeking past EOF.
+
+    A stale bridge state or corrupted request file could carry a resume_from
+    larger than the file's chunk count. The client would seek past EOF, send
+    zero bytes, and report success. The bridge clamps it to total_chunks so the
+    server tells the client to start at 0 (fresh transfer).
+    """
+    bridge, shared = _make_bridge(tmp_path, 'bridge_clamp_resume_from')
+    from common.protocol import CHUNK_SIZE
+    captured = []
+
+    def fake_run_client(filename, filepath, request_id=None, servers=None,
+                        resume_from=0, attempt=1):
+        captured.append(resume_from)
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'done', 'error': None}
+
+    bridge.run_client = fake_run_client
+    with open(os.path.join(shared, 'a.bin'), 'wb') as f:
+        f.write(b'x' * (10 * CHUNK_SIZE))  # 10 chunks
+
+    # resume_from=100 on a 10-chunk file -> clamped to 10 (fresh transfer).
+    res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1',
+                                  'resume_from': 100})
+    assert res['status'] == 'done', res
+    assert captured == [10], captured
+
+
+def test_bridge_counts_part_files_in_failover_disk_check(tmp_path):
+    """Orphaned .part files consume disk and must block failover.
+
+    Regression: h3's disk holds a 9 MB .part file (orphaned from a dead run).
+    h3's quota JSON says used_mb=0 (10 MB quota looks fully free). A 5 MB file
+    failing over to h3 must be blocked because .part + new file exceed quota.
+    """
+    bridge, shared = _make_bridge(tmp_path, 'bridge_part_counts_in_disk')
+    captured = []
+
+    def fake_run_client(filename, filepath, request_id=None, servers=None,
+                        resume_from=0, attempt=1):
+        captured.append(list(servers or []))
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed', 'error': '[CLIENT] Connection lost at chunk 1',
+                'resume_point': 1, 'server': 'h4',
+                'server_addr': '10.0.0.4:9000', 'chunk': 1, 'total': 256}
+
+    bridge.run_client = fake_run_client
+    bridge.BASE_DIR = str(tmp_path)
+    bridge._wait_for_server = lambda addr, request_id: 'down'
+    bridge._server_process_state = lambda host, now=None: False
+
+    os.makedirs(os.path.join(tmp_path, 'stored_files', 'h3'), exist_ok=True)
+    # 9 MB orphaned .part file consumes disk but is not a completed file.
+    with open(os.path.join(tmp_path, 'stored_files', 'h3', 'orphan.bin.part'), 'wb') as f:
+        f.write(b'z' * (9 * MB))
+
+    with open(bridge.SERVER_STORAGE_FILE, 'w') as f:
+        json.dump({'h3': {'quota_mb': 10, 'used_mb': 0},
+                   'h4': {'quota_mb': 1000, 'used_mb': 0}}, f)
+    with open(os.path.join(shared, 'a.bin'), 'wb') as f:
+        f.write(b'x' * (5 * MB))  # needs 5 MB; h3 has only 1 MB free
+
+    res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1',
+                                  'host': 'h4'})
+    assert res['status'] == 'failed', res
+    assert ['10.0.0.3:9000'] not in captured, captured
+    with open(bridge.EVENTS_FILE) as f:
+        events = '\\n'.join(json.load(f))
+    assert 'h3 also lacks space' in events, events
+
+
+def test_client_source_file_deleted_mid_transfer(tmp_path, capsys):
+    """Client fails fast with a resume point when the source is deleted mid-transfer."""
+    import socket
+    import threading
+    from common.protocol import (CHUNK_SIZE, MSG_HELLO, MSG_DATA, MSG_ACK,
+                                  pack_hello, pack_data, pack_ack)
+    from common.transport import recv_frame
+    from common.checksum import compute_crc32
+    from client.client import BackupClient
+
+    port = _free_port_local()
+    payload = tmp_path / 'vanishing.bin'
+    payload.write_bytes(b'V' * (CHUNK_SIZE * 3))
+
+    ready = threading.Event()
+
+    def fake_server():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        srv.settimeout(10)
+        ready.set()
+        conn, _ = srv.accept()
+        conn.settimeout(10)
+        try:
+            hello = recv_frame(conn)
+            assert hello is not None and hello['type'] == MSG_HELLO
+            conn.sendall(pack_ack(0))
+            data = recv_frame(conn)  # chunk 0
+            assert data is not None
+            conn.sendall(pack_ack(data['index']))
+            # Delete the source while the client is reading chunk 1.
+            payload.unlink(missing_ok=True)
+            data = recv_frame(conn)  # client will fail on read
+        finally:
+            conn.close()
+            srv.close()
+
+    t = threading.Thread(target=fake_server, daemon=True)
+    t.start()
+    assert ready.wait(5)
+
+    client = BackupClient([('127.0.0.1', port)], transfer_timeout=10)
+    try:
+        ok = client.send_file(str(payload))
+    finally:
+        client.close()
+        t.join(timeout=5)
+
+    assert ok is False
+    out = capsys.readouterr().out
+    assert '[RESUME_POINT]' in out, out
+
+
+def _free_port_local():
+    import socket as s
+    with s.socket(s.AF_INET, s.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]

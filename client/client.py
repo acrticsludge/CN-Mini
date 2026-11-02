@@ -150,10 +150,23 @@ class BackupClient:
         bytes_sent = start_chunk * self.chunk_size
         start_time = time.time()
 
-        with open(filepath, 'rb') as f:
+        try:
+            f = open(filepath, 'rb')
+        except OSError as e:
+            print(f"[CLIENT] Source file disappeared during transfer: {e}")
+            self.last_ack = start_chunk - 1 if start_chunk > 0 else -1
+            self._report_resume_point(total_chunks)
+            return False
+        with f:
             f.seek(start_chunk * self.chunk_size)
             for chunk_index in range(start_chunk, total_chunks):
-                chunk_data = f.read(self.chunk_size)
+                try:
+                    chunk_data = f.read(self.chunk_size)
+                except OSError as e:
+                    print(f"[CLIENT] Source file unreadable at chunk {chunk_index}: {e}")
+                    self.last_ack = chunk_index - 1
+                    self._report_resume_point(total_chunks)
+                    return False
                 if not chunk_data:
                     break
 
