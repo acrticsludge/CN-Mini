@@ -40,6 +40,9 @@ let lastResultSeen = null;
 let transferRunning = false;
 let lastStorage = null;
 let lastQuotaHost = null;
+// Last quota the server reported per host, so we can tell if the user has
+// typed a different value and must not clobber it on the next poll.
+let lastKnownQuota = {};
 let startInFlight = false;
 let pendingPartial = null; // {name, chunks, server, partial_name} when a partial exists
 
@@ -194,6 +197,7 @@ document.getElementById('btn-set-quota').addEventListener('click', async () => {
         return;
     }
     addEvent(`Quota ${host}: ${quota_mb} MB${quota_mb === 0 ? ' (unlimited)' : ''}`);
+    lastKnownQuota[host] = quota_mb;
     await loadStorage();
 });
 
@@ -410,16 +414,25 @@ function updateStorage(storage) {
     lastStorage = storage;
     // Prefill the quota input for the currently selected server, but never
     // clobber a value the user is actively editing: only fill when the input
-    // is empty or the selected server changed.
+    // is empty (first load), the selected server changed, or the input still
+    // matches the last value the server reported (meaning the user hasn't
+    // touched it yet).
     const selected = document.getElementById('server-target');
     const input = document.getElementById('storage-quota');
     if (!selected || !storage[selected.value] || !input) {
         lastQuotaHost = null;
         return;
     }
-    if (selected.value !== lastQuotaHost || input.value === '') {
-        input.value = storage[selected.value].quota_mb;
-        lastQuotaHost = selected.value;
+    const host = selected.value;
+    const serverQuota = storage[host].quota_mb;
+    const inputVal = Number(input.value.trim() || 0);
+    const shouldPrefill = host !== lastQuotaHost
+        || input.value.trim() === ''
+        || (lastKnownQuota[host] !== undefined && inputVal === lastKnownQuota[host]);
+    if (shouldPrefill) {
+        input.value = serverQuota;
+        lastKnownQuota[host] = serverQuota;
+        lastQuotaHost = host;
     }
     for (const host of ['h3', 'h4']) {
         const s = storage[host];
