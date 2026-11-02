@@ -12,7 +12,10 @@ Backend tests (Flask app only, no Mininet) covering:
 import importlib.util
 import json
 import os
+import socket
 import sys
+import threading
+import time
 
 import pytest
 
@@ -47,6 +50,126 @@ def _write_file(mod, name, mb):
 
 def _set_quota(client, mod, host, quota_mb):
     return client.post('/api/storage', json={'host': host, 'quota_mb': quota_mb})
+
+
+def _free_port():
+    sock = socket.socket()
+    try:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
+
+
+def _serve(tmp_path, host, quota_mb):
+    """Start a real backup server with a quota file. Returns (port, store)."""
+    from server.server import BackupServer
+
+    store = tmp_path / host
+    store.mkdir()
+    quota_file = tmp_path / 'server_storage.json'
+    quota_file.write_text(json.dumps({host: {'quota_mb': quota_mb, 'used_mb': 0}}))
+    port = _free_port()
+    srv = BackupServer(host='127.0.0.1', port=port, storage_dir=str(store),
+                       name=host, quota_file=str(quota_file))
+    threading.Thread(target=srv.start, daemon=True).start()
+    time.sleep(0.3)
+    return port, store
+
+
+def test_server_refuses_file_over_quota(tmp_path):
+    """The receiver, not just the dashboard, must refuse a file that cannot fit.
+
+    This is the case the UI showed as 1024/1023 MB: a failover checked the
+    quota before the server filled up, so the bytes still landed on disk.
+    """
+    from client.client import BackupClient
+
+    port, store = _serve(tmp_path, 'h4', quota_mb=1)
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    payload = shared / 'big.bin'
+    payload.write_bytes(b'x' * (2 * MB))
+
+    client = BackupClient([('127.0.0.1', port)])
+    try:
+        ok = client.send_file(str(payload))
+    finally:
+        client.close()
+
+    assert ok is False
+    assert not (store / 'big.bin').exists(), 'over-quota file was stored'
+
+
+def test_server_reserves_quota_for_inflight_transfer(tmp_path):
+    """A second connection cannot claim space the first one is about to use."""
+    from common.protocol import MSG_ACK, MSG_ERROR, pack_hello
+    from common.transport import recv_frame
+
+    port, _ = _serve(tmp_path, 'h4', quota_mb=1)
+
+    first = socket.create_connection(('127.0.0.1', port), timeout=5)
+    first.sendall(pack_hello('a.bin', 600 * 1024))
+    assert recv_frame(first)['type'] == MSG_ACK
+
+    # Leave the first transfer stalled at HELLO: its 600 KB are reserved.
+    second = socket.create_connection(('127.0.0.1', port), timeout=5)
+    second.sendall(pack_hello('b.bin', 600 * 1024))
+    assert recv_frame(second)['type'] == MSG_ERROR, 'reserved space was handed out twice'
+    second.close()
+
+    # Dropping the stalled client releases the reservation for the next one.
+    first.close()
+    deadline = time.time() + 2
+    while True:
+        third = socket.create_connection(('127.0.0.1', port), timeout=5)
+        third.sendall(pack_hello('c.bin', 600 * 1024))
+        frame = recv_frame(third)
+        if frame['type'] == MSG_ACK:
+            third.close()
+            break
+        third.close()
+        assert time.time() < deadline, 'reservation never released after disconnect'
+        time.sleep(0.05)
+
+
+def test_server_rejects_second_transfer_for_same_name(tmp_path):
+    """Two writers must not share one .part path or one replacement's accounting."""
+    from common.protocol import MSG_ACK, MSG_ERROR, pack_hello
+    from common.transport import recv_frame
+
+    port, _ = _serve(tmp_path, 'h4', quota_mb=10)
+
+    first = socket.create_connection(('127.0.0.1', port), timeout=5)
+    first.sendall(pack_hello('same.bin', 600 * 1024))
+    assert recv_frame(first)['type'] == MSG_ACK
+
+    second = socket.create_connection(('127.0.0.1', port), timeout=5)
+    second.sendall(pack_hello('same.bin', 600 * 1024))
+    assert recv_frame(second)['type'] == MSG_ERROR
+
+    first.close()
+    second.close()
+
+
+def test_server_allows_exact_fit_and_replacement(tmp_path):
+    """Exactly quota-sized is allowed, and re-sending it needs no extra space."""
+    from client.client import BackupClient
+
+    port, store = _serve(tmp_path, 'h4', quota_mb=1)
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    payload = shared / 'fit.bin'
+    payload.write_bytes(b'x' * MB)
+
+    for _ in range(2):
+        client = BackupClient([('127.0.0.1', port)])
+        try:
+            assert client.send_file(str(payload)) is True
+        finally:
+            client.close()
+
+    assert (store / 'fit.bin').stat().st_size == MB
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +404,9 @@ def test_partial_mb_usage_routes_over_quota(dash):
     assert req['host'] == 'h4', req  # h3 has too little free space
 
 
-def test_bridge_blocks_failover_when_backup_lacks_space(tmp_path):
-    """Runtime storage failover must not send to a backup server with too little
-    free space. process_request should fail the run instead."""
-    bridge = _load_bridge('bridge_edge4_no_backup_space_under_test', BRIDGE_SPEC)
+def _make_bridge(tmp_path, name):
+    """Load a bridge module pointed at a temp shared dir with both servers."""
+    bridge = _load_bridge(name, BRIDGE_SPEC)
     shared = str(tmp_path / 'shared')
     os.makedirs(shared, exist_ok=True)
     bridge.SHARED_DIR = shared
@@ -297,6 +419,13 @@ def test_bridge_blocks_failover_when_backup_lacks_space(tmp_path):
     bridge.ALIVE_FILE = os.path.join(shared, 'bridge_alive.json')
     bridge.SERVERS = ['10.0.0.3:9000', '10.0.0.4:9000']
     bridge.SERVER_STORAGE_FILE = os.path.join(shared, 'server_storage.json')
+    return bridge, shared
+
+
+def test_bridge_blocks_failover_when_backup_lacks_space(tmp_path):
+    """Runtime storage failover must not send to a backup server with too little
+    free space. process_request should fail the run instead."""
+    bridge, shared = _make_bridge(tmp_path, 'bridge_edge4_no_backup_space_under_test')
 
     captured = []
 
@@ -324,6 +453,44 @@ def test_bridge_blocks_failover_when_backup_lacks_space(tmp_path):
     # Failover to h4 must be blocked (h4 also too small): run_client must
     # never be called with h4's address.
     assert ['10.0.0.4:9000'] not in captured, captured
+
+
+def test_bridge_blocks_server_down_failover_when_backup_lacks_space(tmp_path):
+    """The reported case: h3 dies mid-transfer, h4 cannot hold the whole file.
+
+    The run must fail instead of restarting on h4 from chunk 0 and writing past
+    its quota.
+    """
+    bridge, shared = _make_bridge(tmp_path, 'bridge_edge4_down_no_space_under_test')
+    captured = []
+
+    def fake_run_client(filename, filepath, request_id=None, servers=None,
+                        resume_from=0, attempt=1):
+        captured.append(list(servers or []))
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed',
+                'error': '[CLIENT] Connection lost at chunk 1',
+                'resume_point': 1, 'server': 'h3',
+                'server_addr': '10.0.0.3:9000', 'chunk': 1, 'total': 256}
+
+    bridge.run_client = fake_run_client
+    bridge._wait_for_server = lambda addr, request_id: 'down'
+    bridge._server_process_state = lambda host, now=None: False
+
+    # h3 has room; h4 is one MB short of the 2 MB file.
+    with open(bridge.SERVER_STORAGE_FILE, 'w') as f:
+        json.dump({'h3': {'quota_mb': 10, 'used_mb': 0},
+                   'h4': {'quota_mb': 1, 'used_mb': 0}}, f)
+    with open(os.path.join(shared, 'a.bin'), 'wb') as f:
+        f.write(b'x' * (2 * MB))
+
+    res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1',
+                                  'host': 'h3'})
+    assert res['status'] == 'failed', res
+    assert ['10.0.0.4:9000'] not in captured, captured
+    with open(bridge.EVENTS_FILE) as f:
+        events = '\n'.join(json.load(f))
+    assert 'h4 also lacks space' in events, events
 
 
 def test_mid_transfer_quota_change_no_effect(dash):

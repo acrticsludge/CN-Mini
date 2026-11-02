@@ -19,15 +19,55 @@ from common.protocol import (
 from common.checksum import verify_crc32
 from common.transport import recv_all, recv_frame
 
+HOST_NAMES = {'10.0.0.3': 'h3', '10.0.0.4': 'h4'}
+DEFAULT_QUOTA_FILE = '/tmp/shared/server_storage.json'
+
+# Quota admission is check-then-write across handler threads, so a lock plus a
+# per-storage reservation keeps two concurrent transfers from both claiming the
+# same free space. A filename already in flight is refused too: both would write
+# the same .part path, and a second writer also invalidates the first one's
+# replacement accounting.
+_admission_lock = threading.Lock()
+_reserved_bytes = {}
+_inflight_names = {}
+
+
+def _reserved_for(storage_dir):
+    return sum(_reserved_bytes.get(storage_dir, {}).values())
+
+
+def quota_bytes(path, host):
+    """Return the host's quota in bytes from the dashboard's JSON, or None.
+
+    Accepts both the current {'h3': {'quota_mb': n}} shape and the old flat
+    {'h3': n} one. None means unlimited (quota 0) or no quota file.
+    """
+    if not path or not host:
+        return None
+    try:
+        with open(path) as f:
+            entry = json.load(f).get(host)
+    except (OSError, ValueError, AttributeError):
+        return None
+    if isinstance(entry, dict):
+        entry = entry.get('quota_mb')
+    try:
+        quota_mb = int(entry)
+    except (TypeError, ValueError):
+        return None
+    return None if quota_mb == 0 else quota_mb * 1024 * 1024
+
 
 class ClientHandler(threading.Thread):
     """Handles a single client connection: receives chunks, verifies, writes to disk."""
 
-    def __init__(self, conn, addr, storage_dir):
+    def __init__(self, conn, addr, storage_dir, name=None, quota_file=None):
         super().__init__(daemon=True)
         self.conn = conn
         self.addr = addr
         self.storage_dir = storage_dir
+        self.name = name
+        self.quota_file = quota_file
         self.running = True
         self.filename = None
         self.file_size = 0
@@ -36,6 +76,8 @@ class ClientHandler(threading.Thread):
         self.file_handle = None
         self.output_path = None
         self.part_path = None
+        self.reserved = 0
+        self.claimed = False
 
     def run(self):
         try:
@@ -59,6 +101,18 @@ class ClientHandler(threading.Thread):
             self._handle_data(frame)
         elif msg_type == MSG_RESUME:
             self._handle_resume(frame)
+
+    def _used_bytes(self):
+        """Bytes of completed files in storage; .part copies are not committed yet."""
+        total = 0
+        for name in os.listdir(self.storage_dir):
+            full = os.path.join(self.storage_dir, name)
+            if os.path.isfile(full) and not name.endswith('.part'):
+                try:
+                    total += os.path.getsize(full)
+                except OSError:
+                    pass
+        return total
 
     def _handle_hello(self, frame):
         """Process HELLO: prepare output file and send the accepted start chunk.
@@ -85,6 +139,44 @@ class ClientHandler(threading.Thread):
         except OSError as e:
             self.send_error(f'disk full or read-only: {e}')
             return
+
+        # The dashboard's quota is advisory unless the receiver enforces it:
+        # a failover can reach a server whose free space was checked before it
+        # filled up, and a direct client never checks at all. Refuse the whole
+        # file here, before truncating any partial, and let the client report
+        # "server storage error" instead of writing past the quota.
+        limit = quota_bytes(self.quota_file, self.name)
+        if limit is not None:
+            conflict = False
+            with _admission_lock:
+                names = _inflight_names.setdefault(self.storage_dir, set())
+                if self.filename in names:
+                    conflict = True
+                else:
+                    # Size the replacement and read usage under the same lock
+                    # that _finish() holds while promoting, so a concurrent
+                    # 900 KB -> 100 KB replacement cannot leave this handler
+                    # sizing against the old file.
+                    existing = (os.path.getsize(self.output_path)
+                                if os.path.isfile(self.output_path) else 0)
+                    need = max(self.file_size - existing, 0)
+                    used = self._used_bytes() + _reserved_for(self.storage_dir)
+                    free = max(limit - used, 0)
+                    admit = need <= free
+                    if admit:
+                        names.add(self.filename)
+                        self.claimed = True
+                        if need:
+                            _reserved_bytes.setdefault(self.storage_dir, {})[self] = need
+                            self.reserved = need
+            if conflict:
+                self.send_error(f'another transfer for {self.filename} is in '
+                                f'progress on {self.name}')
+                return
+            if not admit:
+                self.send_error(f'quota exceeded: {self.file_size} bytes needed, '
+                                f'{free} free on {self.name}')
+                return
 
         accepted = 0
         if 0 < resume_from <= self.total_chunks and os.path.exists(self.part_path):
@@ -167,11 +259,32 @@ class ClientHandler(threading.Thread):
                 self.file_handle.flush()
                 self.file_handle.close()
                 self.file_handle = None
-            os.replace(self.part_path, self.output_path)
+            # Promote and stop reserving under the admission lock: a HELLO that
+            # sizes a same-name replacement must see either the old file with
+            # this transfer still claimed, or the new file with no reservation.
+            with _admission_lock:
+                os.replace(self.part_path, self.output_path)
+                self._release_admission_locked()
         except OSError as e:
             self.send_error(f'disk full or read-only: {e}')
             return
         self._report_stored()
+
+    def _release_admission_locked(self):
+        if self.claimed:
+            names = _inflight_names.get(self.storage_dir)
+            if names is not None:
+                names.discard(self.filename)
+        if self.reserved:
+            _reserved_bytes.get(self.storage_dir, {}).pop(self, None)
+        self.claimed = False
+        self.reserved = 0
+
+    def _release_admission(self):
+        if not self.reserved and not self.claimed:
+            return
+        with _admission_lock:
+            self._release_admission_locked()
 
     def _report_stored(self):
         """Emit a machine-readable receipt so the bridge can verify server-side."""
@@ -206,7 +319,8 @@ class ClientHandler(threading.Thread):
             pass
 
     def cleanup(self):
-        """Close file handle and socket."""
+        """Close file handle and socket; never leave quota reserved for a dead run."""
+        self._release_admission()
         if self.file_handle:
             self.file_handle.close()
         self.conn.close()
@@ -216,10 +330,13 @@ class ClientHandler(threading.Thread):
 class BackupServer:
     """Multi-threaded TCP server that receives file chunks and reassembles files."""
 
-    def __init__(self, host='0.0.0.0', port=9000, storage_dir='/tmp/backup'):
+    def __init__(self, host='0.0.0.0', port=9000, storage_dir='/tmp/backup',
+                 name=None, quota_file=None):
         self.host = host
         self.port = port
         self.storage_dir = storage_dir
+        self.name = name
+        self.quota_file = quota_file
         self.running = False
         self.server_socket = None
 
@@ -236,8 +353,17 @@ class BackupServer:
 
         try:
             while self.running:
-                conn, addr = self.server_socket.accept()
-                handler = ClientHandler(conn, addr, self.storage_dir)
+                try:
+                    conn, addr = self.server_socket.accept()
+                except OSError:
+                    # stop() closes the listening socket from another thread;
+                    # that wakes accept() with an error on Windows.
+                    if not self.running:
+                        break
+                    raise
+                handler = ClientHandler(conn, addr, self.storage_dir,
+                                        name=self.name,
+                                        quota_file=self.quota_file)
                 handler.start()
         except KeyboardInterrupt:
             print("\n[SERVER] Shutting down...")
@@ -257,7 +383,15 @@ if __name__ == '__main__':
     parser.add_argument('--host', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=9000)
     parser.add_argument('--storage', default='/tmp/backup')
+    parser.add_argument('--name', default=None,
+                        help='Quota key in the dashboard storage file (h3/h4)')
+    parser.add_argument('--quota-file', default=DEFAULT_QUOTA_FILE,
+                        help='JSON file with per-server quota_mb (default: %(default)s)')
     args = parser.parse_args()
 
-    server = BackupServer(args.host, args.port, args.storage)
+    # Inside Mininet the bind address identifies the host; pass --name when the
+    # server is launched some other way.
+    server = BackupServer(args.host, args.port, args.storage,
+                          name=args.name or HOST_NAMES.get(args.host),
+                          quota_file=args.quota_file)
     server.start()

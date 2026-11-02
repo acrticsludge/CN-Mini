@@ -28,7 +28,9 @@ def start_server(net, host):
     try:
         proc = node.popen(
             [sys.executable, SERVER_SCRIPT, '--host', HOST_IP[host],
-             '--port', str(SERVER_PORT), '--storage', '/tmp/backup'],
+             '--port', str(SERVER_PORT), '--storage', '/tmp/backup',
+             '--name', host,
+             '--quota-file', '/tmp/shared/server_storage.json'],
             stdout=log, stderr=subprocess.STDOUT,
             env=dict(os.environ, PYTHONUNBUFFERED='1'))
     finally:
