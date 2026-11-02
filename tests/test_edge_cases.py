@@ -62,16 +62,19 @@ def _free_port():
 
 
 def _serve(tmp_path, host, quota_mb):
-    """Start a real backup server with a quota file. Returns (port, store)."""
+    """Start a real backup server with an optional quota. Returns (port, store)."""
     from server.server import BackupServer
 
     store = tmp_path / host
     store.mkdir()
-    quota_file = tmp_path / 'server_storage.json'
-    quota_file.write_text(json.dumps({host: {'quota_mb': quota_mb, 'used_mb': 0}}))
+    quota_file = None
+    if quota_mb is not None:
+        quota_file = tmp_path / 'server_storage.json'
+        quota_file.write_text(json.dumps({host: {'quota_mb': quota_mb, 'used_mb': 0}}))
     port = _free_port()
     srv = BackupServer(host='127.0.0.1', port=port, storage_dir=str(store),
-                       name=host, quota_file=str(quota_file))
+                       name=host,
+                       quota_file=str(quota_file) if quota_file else None)
     threading.Thread(target=srv.start, daemon=True).start()
     time.sleep(0.3)
     return port, store
@@ -134,22 +137,134 @@ def test_server_reserves_quota_for_inflight_transfer(tmp_path):
 
 
 def test_server_rejects_second_transfer_for_same_name(tmp_path):
-    """Two writers must not share one .part path or one replacement's accounting."""
-    from common.protocol import MSG_ACK, MSG_ERROR, pack_hello
+    """A second writer is told the file is busy, even without a quota.
+
+    Two handlers on one filename share a .part path and can interleave bytes.
+    The second must be refused, and the first must still produce one complete
+    file.
+    """
+    from common.checksum import compute_crc32
+    from common.protocol import (CHUNK_SIZE, MSG_ACK, MSG_ERROR, pack_data,
+                                 pack_hello)
     from common.transport import recv_frame
 
-    port, _ = _serve(tmp_path, 'h4', quota_mb=10)
+    port, store = _serve(tmp_path, 'h4', quota_mb=None)
+    content = b'A' * (CHUNK_SIZE * 2)
+    total = 2
 
     first = socket.create_connection(('127.0.0.1', port), timeout=5)
-    first.sendall(pack_hello('same.bin', 600 * 1024))
+    first.sendall(pack_hello('same.bin', len(content)))
     assert recv_frame(first)['type'] == MSG_ACK
 
     second = socket.create_connection(('127.0.0.1', port), timeout=5)
-    second.sendall(pack_hello('same.bin', 600 * 1024))
-    assert recv_frame(second)['type'] == MSG_ERROR
-
-    first.close()
+    second.sendall(pack_hello('same.bin', len(content)))
+    busy = recv_frame(second)
+    assert busy['type'] == MSG_ERROR
+    assert json.loads(busy['payload'])['code'] == 'busy'
     second.close()
+
+    # On a case-insensitive volume the same file must stay busy too.
+    if os.path.normcase('A') == os.path.normcase('a'):
+        variant = socket.create_connection(('127.0.0.1', port), timeout=5)
+        variant.sendall(pack_hello('SAME.BIN', len(content)))
+        case_busy = recv_frame(variant)
+        assert case_busy['type'] == MSG_ERROR
+        assert json.loads(case_busy['payload'])['code'] == 'busy'
+        variant.close()
+
+    for i in range(total):
+        chunk = content[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
+        first.sendall(pack_data(i, total, chunk, compute_crc32(chunk)))
+        assert recv_frame(first)['type'] == MSG_ACK
+    first.close()
+
+    assert (store / 'same.bin').read_bytes() == content
+
+    # The claim is released, so a later transfer can replace the file.
+    third = socket.create_connection(('127.0.0.1', port), timeout=5)
+    third.sendall(pack_hello('same.bin', len(content)))
+    assert recv_frame(third)['type'] == MSG_ACK
+    third.close()
+
+
+def test_server_rejects_part_suffixed_filename(tmp_path):
+    """A source named x.part would collide with x's in-progress copy."""
+    from common.protocol import MSG_ERROR, pack_hello
+    from common.transport import recv_frame
+
+    port, store = _serve(tmp_path, 'h4', quota_mb=None)
+    # Windows strips trailing dots/spaces from path components, so these alias
+    # report.csv.part (x's in-progress temp file).
+    for name in ('report.csv.part', 'REPORT.CSV.PART',
+                 'report.csv.part.', 'report.csv.part '):
+        sock = socket.create_connection(('127.0.0.1', port), timeout=5)
+        sock.sendall(pack_hello(name, 1024))
+        error = recv_frame(sock)
+        assert error['type'] == MSG_ERROR, name
+        assert json.loads(error['payload'])['code'] == 'invalid', name
+        sock.close()
+    assert list(store.iterdir()) == []
+
+
+def test_dashboard_hides_and_rejects_part_sources(dash):
+    """The picker and the API both refuse names the receiver reserves."""
+    client = dash.app.test_client()
+    _write_file(dash, 'REPORT.CSV.PART', 1)
+
+    names = [f['name'] for f in client.get('/api/browse').get_json()['files']]
+    assert 'REPORT.CSV.PART' not in names
+
+    resp = client.post('/api/start-transfer',
+                       json={'filename': 'REPORT.CSV.PART'})
+    assert resp.status_code == 400, resp.get_json()
+    assert '.part' in resp.get_json()['error']
+
+
+def test_client_labels_busy_error(tmp_path, capsys):
+    """A busy file must not be reported as a disk problem."""
+    from common.protocol import MSG_ERROR, MSG_HELLO, pack_frame
+    from common.transport import recv_frame
+    from client.client import BackupClient
+
+    payload = tmp_path / 'a.bin'
+    payload.write_bytes(b'x')
+    port = _free_port()
+    ready = threading.Event()
+    received = {}
+
+    def fake_server():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        srv.settimeout(5)
+        ready.set()
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            received['hello'] = recv_frame(conn)['type']
+            body = json.dumps({'reason': 'another transfer for a.bin is in progress',
+                               'code': 'busy'}).encode()
+            conn.sendall(pack_frame(MSG_ERROR, 0, 0, 0, len(body), body))
+        srv.close()
+
+    thread = threading.Thread(target=fake_server, daemon=True)
+    thread.start()
+    assert ready.wait(5)
+
+    client = BackupClient([('127.0.0.1', port)])
+    try:
+        assert client.send_file(str(payload)) is False
+    finally:
+        client.close()
+        thread.join(timeout=5)
+
+    assert received['hello'] == MSG_HELLO
+    out = capsys.readouterr().out
+    assert '[CLIENT] File busy:' in out
+    assert 'Server storage error' not in out
 
 
 def test_server_allows_exact_fit_and_replacement(tmp_path):

@@ -4,7 +4,7 @@ This report covers failures that threaten a backup itself: the server dying, the
 
 The focus is on cases a user can describe in one sentence. Protocol fuzzing, route flaps, and dashboard security are out of scope.
 
-Case 1 is implemented on `edge-case-1`. The `.part` protection from case 3 is implemented with it. Cases 2 and 4-8 are still planned.
+Case 1-5 are implemented. Cases 6-8 are still planned.
 
 ## Current baseline
 
@@ -19,11 +19,11 @@ Those four facts explain most of the gaps below.
 
 | # | Case | Risk | Effort | Current state |
 |---|---|---|---|---|
-| 1 | Server dies mid-transfer | High | M | Fails; no retry |
-| 2 | Sender crashes mid-transfer | Medium | S/M | Partial file exists; no resume control |
-| 3 | Failed re-backup destroys the last good copy | High | S | Not handled |
-| 4 | Server storage full or read-only | Medium | S | Opaque failure |
-| 5 | Two clients write the same filename | High | S/M | Interleaved writes |
+| 1 | Server dies mid-transfer | High | M | Implemented (retry + failover) |
+| 2 | Sender crashes mid-transfer | Medium | S/M | Implemented (resume prompt) |
+| 3 | Failed re-backup destroys the last good copy | High | S | Implemented (.part + atomic promote) |
+| 4 | Server storage full or read-only | Medium | S | Implemented (MSG_ERROR, quota) |
+| 5 | Two clients write the same filename | High | S/M | Implemented (file busy rejection) |
 | 6 | Source changes during the backup | Medium | S | Not detected |
 | 7 | Done, but the file isn't stored | High | S | Not verified |
 | 8 | Both servers unreachable | Low | S | Works; untested |
@@ -163,9 +163,9 @@ The full design, including the dashboard button and topology animation, is in [s
 
 **Scenario.** h1 and h2 both send `photo.jpg` to h3 at the same time.
 
-**Today.** Both handlers open the same path and write at their own positions. The final file can mix both streams.
+**Today.** Implemented: the server claims the filename at HELLO and rejects a second client with `MSG_ERROR code=busy`, so only one handler writes the `.part` path. The claim is released when the transfer is promoted or the connection dies. The first client's file stays byte-identical; the second fails with `[CLIENT] File busy`. Source names ending in `.part` are reserved and rejected (`code=invalid`), because `x.part` would collide with the temp path for `x`.
 
-**Target.** Each transfer writes a unique temp file, or a per-filename lock rejects the second client. On completion, the last complete version replaces the final name atomically. The stored file is always one complete version.
+**Target.** Keep the per-filename claim at HELLO. A future version can use unique temp files instead if concurrent backups of the same name must both proceed.
 
 **Implementation notes.**
 
@@ -265,7 +265,7 @@ The full design, including the dashboard button and topology animation, is in [s
 
 | File | New tests | Needs Mininet? |
 |---|---|---|
-| `tests/test_edge_cases.py` (new) | server restart, lost ACK, storage full, concurrent same name, source changed, both servers down | No |
+| `tests/test_edge_cases.py` (new) | server restart, lost ACK, storage full, file busy, source changed, both servers down | No |
 | `tests/test_recovery.py` | resume after restart, failover start-from-zero | No |
 | `tests/test_bridge_request.py` | retry loop, resume point parsing | No |
 | `tests/test_dashboard_busy.py` | partial info, stored-file verification | No |

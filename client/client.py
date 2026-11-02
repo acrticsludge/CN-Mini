@@ -88,8 +88,7 @@ class BackupClient:
             print("[CLIENT] Did not receive ready ACK")
             return False
         if ack_frame['type'] == MSG_ERROR:
-            reason = self._error_reason(ack_frame)
-            print(f"[CLIENT] Server storage error: {reason}")
+            self._report_server_error(ack_frame)
             return False
         if ack_frame['type'] != MSG_ACK:
             print("[CLIENT] Did not receive ready ACK")
@@ -146,8 +145,7 @@ class BackupClient:
                     self._report_resume_point(total_chunks)
                     return False
                 if ack_frame['type'] == MSG_ERROR:
-                    reason = self._error_reason(ack_frame)
-                    print(f"[CLIENT] Server storage error: {reason}")
+                    self._report_server_error(ack_frame)
                     self.last_ack = chunk_index - 1
                     self._report_resume_point(total_chunks)
                     return False
@@ -202,13 +200,25 @@ class BackupClient:
             print(f"[CLIENT] Progress: {pct:.1f}% "
                   f"({chunk_index + 1}/{total_chunks} chunks)", flush=True)
 
-    def _error_reason(self, frame):
-        """Extract the human-readable reason from an MSG_ERROR frame payload."""
+    def _report_server_error(self, frame):
+        """Print a busy or rejected file apart from a real storage failure."""
+        payload = self._error_payload(frame)
+        reason = payload.get('reason', 'storage error')
+        code = payload.get('code')
+        if code == 'busy':
+            print(f"[CLIENT] File busy: {reason}")
+        elif code == 'invalid':
+            print(f"[CLIENT] File rejected: {reason}")
+        else:
+            print(f"[CLIENT] Server storage error: {reason}")
+
+    def _error_payload(self, frame):
+        """Parse the MSG_ERROR JSON payload, falling back to a storage error."""
         try:
-            return json.loads(frame['payload'].decode('utf-8')).get('reason',
-                                                                      'storage error')
+            payload = json.loads(frame['payload'].decode('utf-8'))
+            return payload if isinstance(payload, dict) else {}
         except Exception:
-            return 'storage error'
+            return {}
 
     def close(self):
         """Close the connection."""

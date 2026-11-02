@@ -279,7 +279,9 @@ def run_client(filename, filepath, request_id=None, servers=None, resume_from=0,
                     addr = line.split('Connected to ', 1)[1].strip()
                     result['server_addr'] = addr
                     result['server'] = server_name(addr)
-                if 'fail' in line.lower() or 'error' in line.lower() or 'lost' in line.lower():
+                if ('fail' in line.lower() or 'error' in line.lower()
+                        or 'lost' in line.lower() or 'busy' in line.lower()
+                        or 'rejected' in line.lower()):
                     last_error = line
             if os.path.exists(CANCEL_FILE):
                 emit_event(f'Stop requested — killing client for {filename}')

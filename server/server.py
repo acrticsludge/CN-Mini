@@ -78,6 +78,7 @@ class ClientHandler(threading.Thread):
         self.part_path = None
         self.reserved = 0
         self.claimed = False
+        self.claim_key = None
 
     def run(self):
         try:
@@ -128,6 +129,24 @@ class ClientHandler(threading.Thread):
             print(f"[SERVER] Invalid filename from {self.addr}")
             self.conn.close()
             return
+        # .part is the receiver's own temp suffix. A source file with that
+        # suffix would make its final path collide with another file's
+        # in-progress copy, so it cannot be backed up safely. Reject any case:
+        # Windows maps report.csv.PART and report.csv.part to one path.
+        if self.filename.casefold().endswith('.part'):
+            self.send_error('filenames ending in .part are reserved for partial transfers',
+                            code='invalid')
+            return
+        # Windows strips trailing dots and spaces from each path component, so
+        # x, x.part., and x.part  all resolve to the same final path. Reject
+        # them here instead of letting two claim keys alias one temp file.
+        if self.filename.rstrip(' .') != self.filename:
+            self.send_error('trailing dots or spaces in a filename are reserved',
+                            code='invalid')
+            return
+        # Claim by the path the filesystem actually sees, so case-only names
+        # cannot both pass on a case-insensitive volume.
+        self.claim_key = os.path.normcase(self.filename)
         self.file_size = int(info['file_size'])
         resume_from = int(info.get('resume_from', 0) or 0)
         self.total_chunks = (self.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -145,16 +164,21 @@ class ClientHandler(threading.Thread):
         # filled up, and a direct client never checks at all. Refuse the whole
         # file here, before truncating any partial, and let the client report
         # "server storage error" instead of writing past the quota.
+        #
+        # The filename claim applies even without a quota: two writers on one
+        # name would share the same .part path and interleave their bytes.
+        conflict = False
+        admit = True
+        need = 0
         limit = quota_bytes(self.quota_file, self.name)
-        if limit is not None:
-            conflict = False
-            with _admission_lock:
-                names = _inflight_names.setdefault(self.storage_dir, set())
-                if self.filename in names:
-                    conflict = True
-                else:
-                    # Size the replacement and read usage under the same lock
-                    # that _finish() holds while promoting, so a concurrent
+        with _admission_lock:
+            names = _inflight_names.setdefault(self.storage_dir, set())
+            if self.claim_key in names:
+                conflict = True
+            else:
+                if limit is not None:
+                    # Size the replacement and read usage under the lock that
+                    # _finish() holds while promoting, so a concurrent
                     # 900 KB -> 100 KB replacement cannot leave this handler
                     # sizing against the old file.
                     existing = (os.path.getsize(self.output_path)
@@ -163,20 +187,20 @@ class ClientHandler(threading.Thread):
                     used = self._used_bytes() + _reserved_for(self.storage_dir)
                     free = max(limit - used, 0)
                     admit = need <= free
-                    if admit:
-                        names.add(self.filename)
-                        self.claimed = True
-                        if need:
-                            _reserved_bytes.setdefault(self.storage_dir, {})[self] = need
-                            self.reserved = need
-            if conflict:
-                self.send_error(f'another transfer for {self.filename} is in '
-                                f'progress on {self.name}')
-                return
-            if not admit:
-                self.send_error(f'quota exceeded: {self.file_size} bytes needed, '
-                                f'{free} free on {self.name}')
-                return
+                if admit:
+                    names.add(self.claim_key)
+                    self.claimed = True
+                    if need:
+                        _reserved_bytes.setdefault(self.storage_dir, {})[self] = need
+                        self.reserved = need
+        if conflict:
+            self.send_error(f'another transfer for {self.filename} is in progress',
+                            code='busy')
+            return
+        if not admit:
+            self.send_error(f'quota exceeded: {self.file_size} bytes needed, '
+                            f'{free} free on {self.name}')
+            return
 
         accepted = 0
         if 0 < resume_from <= self.total_chunks and os.path.exists(self.part_path):
@@ -274,7 +298,7 @@ class ClientHandler(threading.Thread):
         if self.claimed:
             names = _inflight_names.get(self.storage_dir)
             if names is not None:
-                names.discard(self.filename)
+                names.discard(self.claim_key)
         if self.reserved:
             _reserved_bytes.get(self.storage_dir, {}).pop(self, None)
         self.claimed = False
@@ -301,13 +325,14 @@ class ClientHandler(threading.Thread):
         frame = pack_frame(MSG_ACK, chunk_index, 0, 0, len(payload), payload)
         self.conn.sendall(frame)
 
-    def send_error(self, reason):
-        """Send an MSG_ERROR frame (0x05, JSON {reason}) and close the connection.
+    def send_error(self, reason, code='storage'):
+        """Send an MSG_ERROR frame (0x05, JSON {reason, code}) and close.
 
-        Used when the server cannot write to disk (full / read-only) so the
-        client can fail fast instead of hanging on a missing ACK.
+        Used when the server cannot write to disk (full / read-only) or when a
+        second client is already writing the same filename. The code lets the
+        client tell a busy file from a full disk instead of guessing from text.
         """
-        payload = json.dumps({'reason': reason}).encode('utf-8')
+        payload = json.dumps({'reason': reason, 'code': code}).encode('utf-8')
         frame = pack_frame(MSG_ERROR, 0, 0, 0, len(payload), payload)
         try:
             self.conn.sendall(frame)

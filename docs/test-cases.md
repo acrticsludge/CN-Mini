@@ -78,3 +78,12 @@ New tests:
 Manual demo: kill h3 mid-transfer, restart it before the second probe, then compare the source and stored hashes. Leave h3 down to see the run restart on h4.
 
 Manual link-failure check: kill s1-s2 mid-transfer, confirm the bridge stays alive during the ACK stall, confirm no h4 failover while `server_status.json` still marks h3 alive, then confirm the same run resumes or—if the path stays down—fails over only after the path wait.
+
+## Concurrent same-filename backup (edge case 5)
+
+`tests/test_edge_cases.py` covers the second writer:
+
+- `test_server_rejects_second_transfer_for_same_name` — a stalled first transfer holds the name; the second gets `MSG_ERROR` with `code=busy`; the first still produces a complete file; the claim is released for the next transfer.
+- `test_client_labels_busy_error` — the client prints `[CLIENT] File busy: ...`, not `Server storage error`, so the bridge does not treat a busy file as a full disk.
+- `test_server_rejects_part_suffixed_filename` — a source named `x.part` is refused with `code=invalid`, so it cannot collide with the temp path for `x`.
+- `test_dashboard_hides_and_rejects_part_sources` — the picker hides `.part` names and `/api/start-transfer` returns 400 for them.

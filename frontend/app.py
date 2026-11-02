@@ -479,6 +479,7 @@ def browse_files():
         for f in sorted(os.listdir(SHARED_DIR))
         if os.path.isfile(os.path.join(SHARED_DIR, f))
         and not f.startswith('transfer_')
+        and not f.lower().endswith('.part')
         and f not in internal
     ]
     return jsonify({'directory': 'shared_files', 'files': files})
@@ -503,6 +504,9 @@ def start_transfer():
         target = 'h3'
     if not filename or '..' in filename or '/' in filename or '\\' in filename:
         return jsonify({'error': 'Invalid filename'}), 400
+    if filename.lower().endswith('.part'):
+        return jsonify({'error': 'Filenames ending in .part are reserved '
+                                 'for partial transfers'}), 400
 
     os.makedirs(SHARED_DIR, exist_ok=True)
     src = os.path.join(SHARED_DIR, filename)
