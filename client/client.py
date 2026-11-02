@@ -145,6 +145,13 @@ class BackupClient:
 
         return ok
 
+    def _fail_with_resume_point(self, message, last_ack, total_chunks):
+        """Print an error, record the resume point, and report failure."""
+        print(message)
+        self.last_ack = last_ack
+        self._report_resume_point(total_chunks)
+        return False
+
     def _send_chunks(self, filepath, start_chunk, total_chunks):
         """Send file chunks from start_chunk to total_chunks. Returns True on success."""
         bytes_sent = start_chunk * self.chunk_size
@@ -153,20 +160,22 @@ class BackupClient:
         try:
             f = open(filepath, 'rb')
         except OSError as e:
-            print(f"[CLIENT] Source file disappeared during transfer: {e}")
-            self.last_ack = start_chunk - 1 if start_chunk > 0 else -1
-            self._report_resume_point(total_chunks)
-            return False
+            return self._fail_with_resume_point(
+                f"[CLIENT] Source file disappeared during transfer: {e}",
+                start_chunk - 1 if start_chunk > 0 else -1,
+                total_chunks,
+            )
         with f:
             f.seek(start_chunk * self.chunk_size)
             for chunk_index in range(start_chunk, total_chunks):
                 try:
                     chunk_data = f.read(self.chunk_size)
                 except OSError as e:
-                    print(f"[CLIENT] Source file unreadable at chunk {chunk_index}: {e}")
-                    self.last_ack = chunk_index - 1
-                    self._report_resume_point(total_chunks)
-                    return False
+                    return self._fail_with_resume_point(
+                        f"[CLIENT] Source file unreadable at chunk {chunk_index}: {e}",
+                        chunk_index - 1,
+                        total_chunks,
+                    )
                 if not chunk_data:
                     break
 
@@ -176,23 +185,27 @@ class BackupClient:
                 try:
                     self.sock.sendall(frame)
                 except Exception as e:
-                    print(f"[CLIENT] Connection lost at chunk {chunk_index}: {e}")
-                    self.last_ack = chunk_index - 1
-                    self._report_resume_point(total_chunks)
-                    return False
+                    return self._fail_with_resume_point(
+                        f"[CLIENT] Connection lost at chunk {chunk_index}: {e}",
+                        chunk_index - 1,
+                        total_chunks,
+                    )
 
                 # Wait for ACK
                 ack_frame = recv_frame(self.sock)
                 if ack_frame is None:
-                    print(f"[CLIENT] No ACK received for chunk {chunk_index}")
-                    self.last_ack = chunk_index - 1
-                    self._report_resume_point(total_chunks)
-                    return False
+                    return self._fail_with_resume_point(
+                        f"[CLIENT] No ACK received for chunk {chunk_index}",
+                        chunk_index - 1,
+                        total_chunks,
+                    )
                 if ack_frame['type'] == MSG_ERROR:
                     self._report_server_error(ack_frame)
-                    self.last_ack = chunk_index - 1
-                    self._report_resume_point(total_chunks)
-                    return False
+                    return self._fail_with_resume_point(
+                        f"[CLIENT] Server rejected chunk {chunk_index}",
+                        chunk_index - 1,
+                        total_chunks,
+                    )
 
                 acked_index = struct.unpack('!I', ack_frame['payload'])[0]
                 self.last_ack = acked_index
