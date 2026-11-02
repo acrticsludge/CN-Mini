@@ -639,3 +639,33 @@ def test_mid_transfer_quota_change_no_effect(dash):
     with open(dash.REQUEST_FILE) as f:
         req2 = json.load(f)
     assert req2['host'] == 'h4', req2
+
+
+def test_done_result_with_stored_file_is_verified(dash):
+    """A done result whose file exists on a server is marked verified."""
+    # Store a file on h3.
+    with open(os.path.join(dash.STORED_DIR, 'h3', 'big.bin'), 'wb') as f:
+        f.write(b'x' * (10 * MB))
+    dash.transfer_state.update({'filename': 'big.bin', 'request_id': 'r1'})
+    dash._write_json_atomic(dash.RESULT_FILE, {
+        'filename': 'big.bin', 'status': 'done', 'server': 'h3',
+        'chunk': 10, 'total': 10, 'throughput': 100.0,
+    })
+    dash._sync_transfer_state()
+    assert dash.transfer_state.get('verified') is True
+    assert dash.transfer_state.get('verified_on') == 'h3'
+    assert 'verification_error' not in dash.transfer_state
+
+
+def test_done_result_without_stored_file_is_flagged(dash):
+    """A done result with no stored copy is flagged as not verified."""
+    dash.transfer_state.update({'filename': 'missing.bin', 'request_id': 'r2'})
+    dash._write_json_atomic(dash.RESULT_FILE, {
+        'filename': 'missing.bin', 'status': 'done', 'server': 'h3',
+        'chunk': 10, 'total': 10, 'throughput': 100.0,
+    })
+    dash._sync_transfer_state()
+    assert dash.transfer_state.get('verified') is False
+    assert 'verification_error' in dash.transfer_state
+    log = event_text(dash)
+    assert '[VERIFY] missing.bin done but no stored copy on h3/h4' in log, log

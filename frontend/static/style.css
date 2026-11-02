@@ -309,6 +309,14 @@ main {
     background: #4ecca3;
 }
 
+#progress-bar.done.verified {
+    background: #4ecca3;
+}
+
+#progress-bar.done.unverified {
+    background: #e9b445;
+}
+
 #progress-bar.failed {
     background: #e94560;
 }

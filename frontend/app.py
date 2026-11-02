@@ -377,6 +377,28 @@ def _sync_transfer_state():
                     f"{transfer_state.get('total_chunks', 0)} chunks in "
                     f"{transfer_state.get('duration', '?')}s at "
                     f"{transfer_state.get('throughput', 0)} KB/s")
+                # Case 7: verify the file actually landed on a backup server.
+                # The bridge trusts exit 0 + [COMPLETE]; we check the disk.
+                filename = result.get('filename')
+                target = result.get('server') or transfer_state.get('server')
+                hosts = ([target] if target in ('h3', 'h4') else []) + \
+                    [h for h in ('h3', 'h4') if h != target]
+                verified = False
+                verified_on = None
+                for host in hosts:
+                    path = os.path.join(STORED_DIR, host, filename)
+                    if os.path.isfile(path):
+                        verified = True
+                        verified_on = host
+                        break
+                transfer_state['verified'] = verified
+                transfer_state['verified_on'] = verified_on
+                if not verified:
+                    transfer_state['verification_error'] = (
+                        f'{filename} not found on h3/h4 after done result')
+                    log_event(f'[VERIFY] {filename} done but no stored copy on h3/h4')
+                else:
+                    log_event(f'[VERIFY] {filename} verified on {verified_on}')
             elif result.get('status') == 'failed':
                 log_event(
                     f"[FAIL] Transfer failed: {result.get('filename')} — "

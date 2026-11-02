@@ -336,10 +336,15 @@ function updateProgress(state) {
             bar.className = 'running';
         }
     } else if (state.result && state.result.status === 'done') {
+        const verified = state.verified;
+        const verifiedOn = state.verified_on || '';
+        const verifyTag = verified
+            ? ` (verified on ${verifiedOn})`
+            : ` (copy not found — ${state.verification_error || 'unknown'})`;
         text.textContent = `Idle — last transfer ${state.filename} completed at `
-            + `${state.completed_at || '--:--:--'} (CRC32 verified, ${tput.toFixed(0)} KB/s)`;
+            + `${state.completed_at || '--:--:--'} (CRC32 verified, ${tput.toFixed(0)} KB/s)${verifyTag}`;
         bar.style.width = '0%';
-        bar.className = '';
+        bar.className = verified ? 'done verified' : 'done unverified';
     } else if (state.result && state.result.status === 'failed') {
         text.textContent = `Idle — last transfer ${state.filename} failed at `
             + `${state.completed_at || '--:--:--'} (${state.result.error || 'unknown error'})`;
