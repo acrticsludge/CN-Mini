@@ -440,21 +440,28 @@ def index():
     return render_template('dashboard.html')
 
 
+def _file_size(full):
+    try:
+        return os.path.getsize(full)
+    except OSError:
+        return None
+
+
 @app.route('/api/files')
 def list_files():
     """List all stored files on backup servers."""
     files = {}
     for server in ['h3', 'h4']:
         path = os.path.join(STORED_DIR, server)
+        files[server] = []
         if os.path.exists(path):
-            files[server] = [
-                {'name': f, 'size': os.path.getsize(os.path.join(path, f))}
-                for f in os.listdir(path)
-                if os.path.isfile(os.path.join(path, f))
-                and not f.endswith('.part')
-            ]
-        else:
-            files[server] = []
+            for f in os.listdir(path):
+                full = os.path.join(path, f)
+                if not os.path.isfile(full) or f.endswith('.part'):
+                    continue
+                size = _file_size(full)
+                if size is not None:
+                    files[server].append({'name': f, 'size': size})
     return jsonify(files)
 
 
@@ -466,7 +473,6 @@ def list_partial_files():
     point is floor(size / CHUNK_SIZE): every complete chunk in the part file is
     already stored, so the client resumes from that chunk index.
     """
-    CHUNK_SIZE_LOCAL = CHUNK_SIZE
     partials = {}
     for server in ['h3', 'h4']:
         path = os.path.join(STORED_DIR, server)
@@ -477,7 +483,7 @@ def list_partial_files():
                 if not f.endswith('.part') or not os.path.isfile(full):
                     continue
                 size = os.path.getsize(full)
-                chunks = size // CHUNK_SIZE_LOCAL
+                chunks = size // CHUNK_SIZE
                 partials[server].append({
                     'name': f[:-5],  # strip .part suffix -> original filename
                     'size': size,
