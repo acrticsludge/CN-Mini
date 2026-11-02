@@ -68,11 +68,12 @@ docs/          — Design spec, runbook, architecture, results
 
 ---
 
-## Running Tests
+### Running Tests
 
 ```bash
 pytest tests/ -v
 ```
+**141 passed, 6 skipped.**
 
 ---
 

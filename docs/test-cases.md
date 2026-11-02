@@ -108,3 +108,28 @@ Manual link-failure check: kill s1-s2 mid-transfer, confirm the bridge stays ali
 `tests/test_edge_cases.py` covers:
 
 - `test_both_servers_unreachable_reports_clear_reason` — with nothing listening, the client prints `[CLIENT] No backup server reachable`, exits 1, and creates no partial file.
+
+## Failover storage safety (edge case 20)
+
+`tests/test_edge_cases.py` covers the reported bug — kill h4 mid-transfer, failover swaps to h3 with less space:
+
+- `test_bridge_failover_blocks_when_backup_disk_is_full` — h3 disk holds 9 MB of files but quota JSON says `used_mb=0`; a 5 MB file failing over to h3 is **blocked**, `run_client` is never invoked with h3's address, run fails with `[STORAGE] h3 also lacks space`.
+- `test_bridge_failover_proceeds_when_backup_disk_has_space` — h3 quota JSON says `used_mb=10` (looks full) but disk is empty; a 5 MB file failing over to h3 **proceeds** — stale JSON never blocks a valid failover.
+
+## Resume-from validation (edge case 31)
+
+`tests/test_edge_cases.py` covers:
+
+- `test_bridge_clamps_resume_from_beyond_total_chunks` — `resume_from=100` on a 10-chunk file is clamped to 10 (fresh transfer), preventing a seek-past-EOF phantom success.
+
+## `.part` disk counting (edge case 32)
+
+`tests/test_edge_cases.py` covers:
+
+- `test_bridge_counts_part_files_in_failover_disk_check` — a 9 MB orphaned `orphan.bin.part` on h3 counts against disk; a 5 MB file failing over to h3 is blocked even though quota JSON says `used_mb=0`.
+
+## Source deleted mid-transfer (edge case 30)
+
+`tests/test_edge_cases.py` covers:
+
+- `test_client_source_file_deleted_mid_transfer` — the source file is deleted mid-transfer; client fails fast with `[RESUME_POINT]` instead of crashing, no partial result reported as success.

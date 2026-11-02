@@ -2,6 +2,7 @@
 
 **Project #24 · Jackfruit Mini Project · 40 Marks**
 **Protocol:** TCP · **Emulation:** Mininet · **SDN:** Ryu · **Frontend:** Flask
+**Test suite:** 141 passed, 6 skipped (`pytest tests/`)
 
 ---
 
@@ -281,7 +282,53 @@ Client ◄──ACK (2)──────────────── Server
 
 ---
 
-## 9. Reproduction Checklist
+## 10. Edge Cases Hardened (backend tightening)
+
+The following failure classes were found during E2E deep scan and are now handled
+in code with regression tests (`docs/e2e-edge-cases.md` has the full 83-case register):
+
+| Case | Scenario | Fix (file:line) | Test |
+|------|----------|-----------------|------|
+| E20 | Kill h4 mid-transfer, failover to h3 with less disk space than the file needs | `mininet/bridge.py:342` — `_server_free_bytes()` reads real disk usage in `stored_files/<host>` instead of stale `used_mb` from quota JSON; failover blocked when backup cannot hold the file | `test_bridge_failover_blocks_when_backup_disk_is_full` |
+| E20b | Stale quota JSON says h3 is full but disk is empty — failover wrongly blocked | Same fix: real disk usage = 0 → failover proceeds | `test_bridge_failover_proceeds_when_backup_disk_has_space` |
+| E30 | Source file deleted mid-transfer → client crashed with no resume point | `client/client.py:153` — catches `OSError` on source open/read, emits `[RESUME_POINT]`, returns `False` | `test_client_source_file_deleted_mid_transfer` |
+| E31 | `resume_from` beyond total chunks → seek past EOF, reports success with 0 bytes | `mininet/bridge.py:489` — clamps `resume_from` to `total_chunks` | `test_bridge_clamps_resume_from_beyond_total_chunks` |
+| E32 | Orphaned `.part` files invisible to failover disk check → failover onto a disk actually full of partial transfers | `mininet/bridge.py:342` — `_disk_used_bytes()` counts all files including `.part` | `test_bridge_counts_part_files_in_failover_disk_check` |
+
+### Demo: failover blocked when backup disk is full
+
+1. Set h3 quota to 10 MB via the dashboard Storage row; h4 to unlimited.
+2. Put a 9 MB orphaned `orphan.bin.part` into `stored_files/h3/` (simulates a dead run).
+3. Start a 5 MB transfer to h4, kill h4 mid-way (dashboard Kill Server or `mininet> h4 pkill -f server.py`).
+4. Dashboard shows `[FAILOVER] h3 also lacks space` and the run fails — no bytes are sent to h3.
+5. Confirm: `ls stored_files/h3/` still only contains the orphan, no new file.
+
+### Demo: source deleted mid-transfer
+
+1. Start transferring `vanishing.bin`.
+2. Delete `shared_files/vanishing.bin` while the transfer is running.
+3. Client prints `[CLIENT] Source file disappeared...` and `[RESUME_POINT]`, then exits `False`.
+4. Dashboard reports failure with the resume point available; no partial result is reported as success.
+
+---
+
+## 11. Transfer Menu Reorganization
+
+The Transfer Control panel buttons were previously all in one line, making accidental clicks likely and the UI hard to read. They are now grouped into 5 labeled rows:
+
+| Row | Controls |
+|-----|----------|
+| Transfer | Start Transfer, Stop Transfer |
+| Target | Server selector (h3/h4) |
+| Link | Trigger Link Failure, Restore Link |
+| Server | Kill Server, Restart Server |
+| Storage | Quota (MB) input, Set Quota |
+
+Each row has an uppercase `.group-label`; buttons keep their original IDs so all JS handlers (`dashboard.js`) are unchanged. CSS: `.button-row` (flex row) + `.group-label` in `frontend/static/style.css`; HTML rows in `frontend/templates/dashboard.html`.
+
+---
+
+## 12. Reproduction Checklist
 
 - [ ] Ubuntu VM running (20.04+)
 - [ ] `sudo apt install mininet openvswitch-switch`
@@ -295,7 +342,7 @@ Client ◄──ACK (2)──────────────── Server
 
 ---
 
-## 10. Rubric Alignment
+## 13. Rubric Alignment
 
 | Rubric Component | Marks | Where It's Addressed |
 |------------------|-------|---------------------|

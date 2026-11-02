@@ -56,9 +56,10 @@ dashboard.
   bit gives a different number. Computed per 8 KB chunk — fast enough for
   ~144,000 chunks per gigabyte, and it catches random corruption (it is _not_
   security: a deliberate forger can fake it).
-- **pytest — the test runner.** 70+ tests cover the protocol, transfers,
+- pytest — the test runner. 70+ tests cover the protocol, transfers,
   resume, controller rerouting, dashboard races, and a full local end-to-end
   chain. Every bug class met during the build has a test pinning it.
+  **141 tests pass, 6 skipped (`pytest tests/`).**
 
 No Docker, no cloud, no paid services. Three terminals on an Ubuntu VM is the
 entire deployment.
@@ -290,6 +291,8 @@ completion. Confusing the two is the classic viva trap.
 - **STP reconvergence (~30–60 s) gates every recovery** — controller logic is
   seconds, physics is tens of seconds. Rapid link flapping keeps STP
   reconverging forever: kill once, leave it down.
+- **Orphaned `.part` files consume disk but are invisible to quota JSON** — failover
+  disk checks now count all files including `.part` (`mininet/bridge.py`).
 - A blackhole longer than 60 s still fails the run (re-click on the healed
   network — the scripted fallback, not a surprise).
 - **CRC detects accidents, not attackers**; no TLS, no auth; failover to one
@@ -298,6 +301,28 @@ completion. Confusing the two is the classic viva trap.
   exists, and we say so instead of inventing one.
 - Controller and app interact **only through the network** — there is no
   direct link, by design (separation of planes).
+- **Source deleted mid-transfer** fails fast with `[RESUME_POINT]` instead of
+  crashing (`client/client.py`).
+- **Stale `resume_from` beyond total chunks** is clamped instead of seeking
+  past EOF (`mininet/bridge.py`).
+
+## 11. Transfer Menu — organized by function
+
+Buttons are no longer one long line. They are grouped into 5 labeled rows
+in `frontend/templates/dashboard.html` with `.button-row` / `.group-label`
+styles in `frontend/static/style.css`:
+
+| Row | Controls |
+|-----|----------|
+| Transfer | Start Transfer, Stop Transfer |
+| Target | Server selector (h3/h4) |
+| Link | Trigger Link Failure, Restore Link |
+| Server | Kill Server, Restart Server |
+| Storage | Quota (MB) input, Set Quota |
+
+All button IDs are unchanged, so every JS handler in `dashboard.js` still works.
+The grouping prevents accidental clicks and makes each functional family
+(send, target, network, server, storage) scannable at a glance.
 
 ## 10. Repo map & where to go deeper
 
