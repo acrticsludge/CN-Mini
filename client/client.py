@@ -12,7 +12,7 @@ import struct
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from common.protocol import (
-    HEADER_SIZE, MSG_ACK, CHUNK_SIZE,
+    HEADER_SIZE, MSG_ACK, MSG_ERROR, CHUNK_SIZE,
     pack_frame, unpack_header, pack_hello, pack_data, pack_resume, unpack_ack,
 )
 from common.checksum import compute_crc32
@@ -84,7 +84,14 @@ class BackupClient:
 
         # The ready ACK carries the chunk the server will actually start at.
         ack_frame = recv_frame(self.sock)
-        if ack_frame is None or ack_frame['type'] != MSG_ACK:
+        if ack_frame is None:
+            print("[CLIENT] Did not receive ready ACK")
+            return False
+        if ack_frame['type'] == MSG_ERROR:
+            reason = self._error_reason(ack_frame)
+            print(f"[CLIENT] Server storage error: {reason}")
+            return False
+        if ack_frame['type'] != MSG_ACK:
             print("[CLIENT] Did not receive ready ACK")
             return False
         accepted_start = unpack_ack(ack_frame['payload'])
@@ -138,6 +145,12 @@ class BackupClient:
                     self.last_ack = chunk_index - 1
                     self._report_resume_point(total_chunks)
                     return False
+                if ack_frame['type'] == MSG_ERROR:
+                    reason = self._error_reason(ack_frame)
+                    print(f"[CLIENT] Server storage error: {reason}")
+                    self.last_ack = chunk_index - 1
+                    self._report_resume_point(total_chunks)
+                    return False
 
                 acked_index = struct.unpack('!I', ack_frame['payload'])[0]
                 self.last_ack = acked_index
@@ -188,6 +201,14 @@ class BackupClient:
             pct = (chunk_index + 1) / total_chunks * 100
             print(f"[CLIENT] Progress: {pct:.1f}% "
                   f"({chunk_index + 1}/{total_chunks} chunks)", flush=True)
+
+    def _error_reason(self, frame):
+        """Extract the human-readable reason from an MSG_ERROR frame payload."""
+        try:
+            return json.loads(frame['payload'].decode('utf-8')).get('reason',
+                                                                      'storage error')
+        except Exception:
+            return 'storage error'
 
     def close(self):
         """Close the connection."""

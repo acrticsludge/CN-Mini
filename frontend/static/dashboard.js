@@ -38,6 +38,8 @@ let throughputData = [];
 let selectedFile = null;
 let lastResultSeen = null;
 let transferRunning = false;
+let lastStorage = null;
+let lastQuotaHost = null;
 let startInFlight = false;
 let pendingPartial = null; // {name, chunks, server, partial_name} when a partial exists
 
@@ -173,6 +175,28 @@ document.getElementById('btn-server-up').addEventListener('click', async () => {
     if (result.applied) updateHostStatus(host, 'up');
 });
 
+document.getElementById('btn-set-quota').addEventListener('click', async () => {
+    const host = document.getElementById('server-target').value;
+    const input = document.getElementById('storage-quota');
+    const quota_mb = Number(input.value);
+    if (!Number.isFinite(quota_mb) || quota_mb < 0) {
+        addEvent(`Invalid quota for ${host}`);
+        return;
+    }
+    const response = await fetch('/api/storage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host, quota_mb })
+    });
+    const result = await response.json();
+    if (!response.ok || result.error) {
+        addEvent(`Set quota ${host}: ${result.error || response.status}`);
+        return;
+    }
+    addEvent(`Quota ${host}: ${quota_mb} MB${quota_mb === 0 ? ' (unlimited)' : ''}`);
+    await loadStorage();
+});
+
 document.getElementById('btn-refresh-files').addEventListener('click', loadFiles);
 
 // Functions
@@ -180,6 +204,7 @@ function eventClass(text) {
     // Severity markers: backend lines carry [RECOVERY]/[LINK]/[DONE]/[FAIL];
     // local notices are matched by keyword. Unknown lines stay unstyled.
     if (text.includes('[RECOVERY]')) return 'evt-recovery';
+    if (text.includes('[STORAGE]')) return 'evt-storage';
     if (text.includes('[SERVER]')) return 'evt-server';
     if (text.includes('[RETRY]')) return 'evt-retry';
     if (text.includes('[RESUME]')) return 'evt-resume';
@@ -276,6 +301,8 @@ function updateProgress(state) {
     updateActiveServer(state.server);
 
     bar.style.width = `${progress}%`;
+    const storageFrom = state.storage_from;
+    const storageTo = state.storage_to || state.server || 'server';
     if (phase === 'retrying') {
         text.textContent = `${state.server || 'server'} unreachable, retrying `
             + `${state.attempt || 1}/${state.max_attempts || 2} `
@@ -285,10 +312,18 @@ function updateProgress(state) {
         text.textContent = `Resuming at chunk ${sent}/${total}`;
         bar.className = 'running resuming';
     } else if (phase === 'failover') {
-        text.textContent = `Restarting on backup server ${state.server || 'h4'} — ${sent}/${total}`;
-        bar.className = 'running failover';
+        if (storageFrom) {
+            text.textContent = `Server ${storageFrom} full — routing to ${storageTo} — ${sent}/${total}`;
+            bar.className = 'running failover storage-full';
+        } else {
+            text.textContent = `Restarting on backup server ${state.server || 'h4'} — ${sent}/${total}`;
+            bar.className = 'running failover';
+        }
     } else if (state.running) {
-        if (trafficStalled) {
+        if (storageFrom && sent === 0) {
+            text.textContent = `Server ${storageFrom} full — routing to ${storageTo}`;
+            bar.className = 'running storage-full';
+        } else if (trafficStalled) {
             text.textContent = `Stalled at chunk ${sent}/${total} — no chunks for `
                 + `${idleSeconds.toFixed(0)}s; waiting for path recovery`;
             bar.className = 'running stalled';
@@ -368,6 +403,57 @@ function updateServerStatus(servers) {
     }
     const el = document.getElementById('server-status-text');
     if (el) el.textContent = down.length ? `Server ${down.join(', ')} down` : 'Servers up';
+}
+
+function updateStorage(storage) {
+    if (!storage) return;
+    lastStorage = storage;
+    // Prefill the quota input for the currently selected server, but never
+    // clobber a value the user is actively editing: only fill when the input
+    // is empty or the selected server changed.
+    const selected = document.getElementById('server-target');
+    const input = document.getElementById('storage-quota');
+    if (!selected || !storage[selected.value] || !input) {
+        lastQuotaHost = null;
+        return;
+    }
+    if (selected.value !== lastQuotaHost || input.value === '') {
+        input.value = storage[selected.value].quota_mb;
+        lastQuotaHost = selected.value;
+    }
+    for (const host of ['h3', 'h4']) {
+        const s = storage[host];
+        if (!s) continue;
+        const used = Number(s.used_mb) || 0;
+        const quota = Number(s.quota_mb) || 0;
+        const free = s.free_mb;
+        // Badge on the topology host.
+        const badge = document.getElementById('host-storage-' + host);
+        let text = '—';
+        if (quota === 0) text = `${used} MB / ∞`;
+        else if (free !== null && free !== undefined) text = `${used}/${quota} MB`;
+        if (badge) badge.textContent = text;
+        // Metrics row.
+        const metric = document.getElementById('storage-' + host);
+        if (metric) metric.textContent = text;
+        // Storage state on the host rect: full at quota, low at 80%.
+        const hostEl = document.getElementById('host-' + host);
+        if (!hostEl) continue;
+        hostEl.classList.remove('storage-full', 'storage-low');
+        if (quota > 0) {
+            const pct = used / quota;
+            if (pct >= 1) hostEl.classList.add('storage-full');
+            else if (pct >= 0.8) hostEl.classList.add('storage-low');
+        }
+    }
+}
+
+async function loadStorage() {
+    try {
+        const response = await fetch('/api/storage');
+        const storage = await response.json();
+        if (storage) updateStorage(storage);
+    } catch (e) { /* storage endpoint not available yet */ }
 }
 
 function renderRetryRing(host) {
@@ -587,7 +673,17 @@ async function loadFiles() {
     const list = document.getElementById('files-list');
     list.innerHTML = '';
 
+    // Usage header per server, shown next to each server's file list.
     for (const [server, fileList] of Object.entries(files)) {
+        const usage = storageUsageText(server);
+        if (usage) {
+            const header = document.createElement('div');
+            header.className = 'file-item';
+            header.style.fontWeight = 'bold';
+            header.style.color = '#e94560';
+            header.textContent = `${server}: ${usage}`;
+            list.appendChild(header);
+        }
         for (const file of fileList) {
             const item = document.createElement('div');
             item.className = 'file-item';
@@ -602,6 +698,15 @@ async function loadFiles() {
     if (!files.h3?.length && !files.h4?.length) {
         list.innerHTML = '<p>No files stored yet</p>';
     }
+}
+
+function storageUsageText(server) {
+    if (!lastStorage || !lastStorage[server]) return null;
+    const s = lastStorage[server];
+    const used = Number(s.used_mb) || 0;
+    const quota = Number(s.quota_mb) || 0;
+    if (quota === 0) return `${used} MB / ∞`;
+    return `${used}/${quota} MB`;
 }
 
 async function loadBrowse() {
@@ -673,7 +778,10 @@ loadFiles();
 loadBrowse();
 loadPartials();
 document.getElementById('btn-refresh-browse').addEventListener('click', loadBrowse);
-document.getElementById('server-target').addEventListener('change', loadPartials);
+document.getElementById('server-target').addEventListener('change', async () => {
+    await loadPartials();
+    await loadStorage();
+});
 async function pollOnce() {
     const response = await fetch('/api/metrics');
     const metrics = await response.json();
@@ -713,6 +821,7 @@ async function pollOnce() {
             }
         }
         updateServerStatus(sdata.servers);
+        await loadStorage();
         const b = sdata.bridge;
         if (b) {
             const bridgeEl = document.getElementById('bridge-value');

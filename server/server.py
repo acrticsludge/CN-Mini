@@ -13,7 +13,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from common.protocol import (
-    HEADER_SIZE, MSG_HELLO, MSG_DATA, MSG_RESUME, MSG_ACK, CHUNK_SIZE,
+    HEADER_SIZE, MSG_HELLO, MSG_DATA, MSG_RESUME, MSG_ACK, MSG_ERROR, CHUNK_SIZE,
     pack_frame, unpack_header, unpack_frame, pack_hello, pack_data, pack_ack,
 )
 from common.checksum import verify_crc32
@@ -80,14 +80,22 @@ class ClientHandler(threading.Thread):
         self.output_path = os.path.join(self.storage_dir, self.filename)
         # The in-progress copy stays hidden from /api/files until it is whole.
         self.part_path = self.output_path + '.part'
-        os.makedirs(self.storage_dir, exist_ok=True)
+        try:
+            os.makedirs(self.storage_dir, exist_ok=True)
+        except OSError as e:
+            self.send_error(f'disk full or read-only: {e}')
+            return
 
         accepted = 0
         if 0 < resume_from <= self.total_chunks and os.path.exists(self.part_path):
             if os.path.getsize(self.part_path) >= resume_from * CHUNK_SIZE:
                 accepted = resume_from
         self.received = set(range(accepted))
-        self.file_handle = open(self.part_path, 'r+b' if accepted else 'wb')
+        try:
+            self.file_handle = open(self.part_path, 'r+b' if accepted else 'wb')
+        except OSError as e:
+            self.send_error(f'disk full or read-only: {e}')
+            return
         if accepted:
             self.file_handle.seek(accepted * CHUNK_SIZE)
 
@@ -121,8 +129,12 @@ class ClientHandler(threading.Thread):
             print(f"[SERVER] CRC32 mismatch on chunk {index}, dropping")
             return
         self.file_handle.seek(index * CHUNK_SIZE)
-        self.file_handle.write(payload)
-        self.file_handle.flush()
+        try:
+            self.file_handle.write(payload)
+            self.file_handle.flush()
+        except OSError as e:
+            self.send_error(f'disk full or read-only: {e}')
+            return
         self.received.add(index)
         if len(self.received) >= self.total_chunks:
             # A resume can sit on a longer old part file; cut the stale tail.
@@ -150,11 +162,15 @@ class ClientHandler(threading.Thread):
 
     def _finish(self):
         """Close the part file and atomically promote it to the final name."""
-        if self.file_handle:
-            self.file_handle.flush()
-            self.file_handle.close()
-            self.file_handle = None
-        os.replace(self.part_path, self.output_path)
+        try:
+            if self.file_handle:
+                self.file_handle.flush()
+                self.file_handle.close()
+                self.file_handle = None
+            os.replace(self.part_path, self.output_path)
+        except OSError as e:
+            self.send_error(f'disk full or read-only: {e}')
+            return
         self._report_stored()
 
     def _report_stored(self):
@@ -171,6 +187,23 @@ class ClientHandler(threading.Thread):
         payload = struct.pack('!I', chunk_index)
         frame = pack_frame(MSG_ACK, chunk_index, 0, 0, len(payload), payload)
         self.conn.sendall(frame)
+
+    def send_error(self, reason):
+        """Send an MSG_ERROR frame (0x05, JSON {reason}) and close the connection.
+
+        Used when the server cannot write to disk (full / read-only) so the
+        client can fail fast instead of hanging on a missing ACK.
+        """
+        payload = json.dumps({'reason': reason}).encode('utf-8')
+        frame = pack_frame(MSG_ERROR, 0, 0, 0, len(payload), payload)
+        try:
+            self.conn.sendall(frame)
+        except OSError:
+            pass
+        try:
+            self.conn.close()
+        except OSError:
+            pass
 
     def cleanup(self):
         """Close file handle and socket."""

@@ -35,6 +35,7 @@ LINK_RESULT_FILE = os.path.join(SHARED_DIR, 'link_result.json')
 SERVER_REQUEST_FILE = os.path.join(SHARED_DIR, 'server_request.json')
 SERVER_RESULT_FILE = os.path.join(SHARED_DIR, 'server_result.json')
 SERVER_STATUS_FILE = os.path.join(SHARED_DIR, 'server_status.json')
+SERVER_STORAGE_FILE = os.path.join(SHARED_DIR, 'server_storage.json')
 
 # Global state
 transfer_state = {
@@ -193,6 +194,59 @@ def _server_status():
         out[host] = {'alive': alive, 'pid': entry.get('pid'),
                      'since': entry.get('since'),
                      'age_s': round(age, 1) if age is not None else None}
+    return out
+
+
+# Per-server storage quota, persisted in shared_files/server_storage.json.
+# quota_mb == 0 means unlimited. used_mb is recomputed from disk on every read.
+DEFAULT_QUOTA_MB = 1000
+
+
+def _load_storage_quotas():
+    """Return {host: quota_mb} for h3/h4, falling back to the default."""
+    data = _read_json(SERVER_STORAGE_FILE) or {}
+    quotas = {}
+    for host in ('h3', 'h4'):
+        try:
+            quotas[host] = int(data.get(host, DEFAULT_QUOTA_MB))
+        except (TypeError, ValueError):
+            quotas[host] = DEFAULT_QUOTA_MB
+    return quotas
+
+
+def _save_storage_quotas(quotas):
+    _write_json_atomic(SERVER_STORAGE_FILE, quotas)
+
+
+def _used_bytes(host):
+    """Sum of non-.part bytes stored for a host (raw bytes, for capacity checks)."""
+    path = os.path.join(STORED_DIR, host)
+    total = 0
+    if os.path.isdir(path):
+        for name in os.listdir(path):
+            full = os.path.join(path, name)
+            if os.path.isfile(full) and not name.endswith('.part'):
+                try:
+                    total += os.path.getsize(full)
+                except OSError:
+                    pass
+    return total
+
+
+def _used_mb(host):
+    """Sum of non-.part bytes stored for a host, in whole MB (display only)."""
+    return _used_bytes(host) // (1024 * 1024)
+
+
+def _storage_snapshot():
+    """{host: {quota_mb, used_mb, free_mb}} recomputed from disk each read."""
+    quotas = _load_storage_quotas()
+    out = {}
+    for host in ('h3', 'h4'):
+        used = _used_mb(host)
+        quota = quotas[host]
+        free = None if quota == 0 else max(quota - used, 0)
+        out[host] = {'quota_mb': quota, 'used_mb': used, 'free_mb': free}
     return out
 
 
@@ -430,6 +484,9 @@ def start_transfer():
     data = request.get_json(force=True, silent=True) or {}
     filename = data.get('filename') or os.path.basename(data.get('file_path', ''))
     resume_from = int(data.get('resume_from', 0) or 0)
+    target = data.get('host', 'h3')
+    if target not in ('h3', 'h4'):
+        target = 'h3'
     if not filename or '..' in filename or '/' in filename or '\\' in filename:
         return jsonify({'error': 'Invalid filename'}), 400
 
@@ -437,6 +494,32 @@ def start_transfer():
     src = os.path.join(SHARED_DIR, filename)
     if not os.path.isfile(src):
         return jsonify({'error': f'File not found in shared_files/: {filename}'}), 404
+    file_size = os.path.getsize(src)
+    MB = 1024 * 1024
+
+    def _free_bytes(host, quota_mb):
+        # Bytes still available on a host. None means unlimited (quota 0).
+        # size == free space is allowed; only strictly-insufficient is full.
+        if quota_mb == 0:
+            return None
+        return max(quota_mb * MB - _used_bytes(host), 0)
+
+    def _is_full(free_bytes):
+        return free_bytes is not None and file_size > free_bytes
+
+    storage = _storage_snapshot()
+    target_free = _free_bytes(target, storage[target]['quota_mb'])
+    other = 'h4' if target == 'h3' else 'h3'
+    other_free = _free_bytes(other, storage[other]['quota_mb'])
+    routed_to = target
+    if _is_full(target_free):
+        if _is_full(other_free):
+            log_event(f'[STORAGE] Both servers full — cannot store {filename} '
+                      f'(need {file_size} bytes)')
+            return jsonify({'error': f'Both servers full — cannot store {filename}'}), 409
+        log_event(f'[STORAGE] {target} full for {filename} (need {file_size} bytes, '
+                  f'have {target_free} bytes); routing to {other}')
+        routed_to = other
 
     with _start_lock:
         _sync_transfer_state()
@@ -455,7 +538,8 @@ def start_transfer():
         request_id = _new_request_id()
         _write_json_atomic(REQUEST_FILE, {'filename': filename,
                                           'request_id': request_id,
-                                          'resume_from': resume_from})
+                                          'resume_from': resume_from,
+                                          'host': routed_to})
 
     # New run, new event file on the bridge side: reset the ingest cursor so
     # the fresh events are picked up from index 0. The dashboard's own history
@@ -483,10 +567,14 @@ def start_transfer():
     transfer_state['max_attempts'] = 2
     transfer_state['resume_from'] = 0
     transfer_state['server'] = None
+    transfer_state['storage_from'] = None
+    transfer_state['storage_to'] = None
     transfer_state['retry_wait_s'] = None
     transfer_state['last_chunk_at'] = None
     transfer_state['chunk_idle_s'] = None
     transfer_state['link_stall_warned'] = False
+    transfer_state['storage_from'] = target if routed_to != target else None
+    transfer_state['storage_to'] = routed_to
     # The previous transfer's result is intentionally kept out of the new run's
     # state, but its metrics stay visible in the panel until this one finishes.
     transfer_state['completed_at'] = None
@@ -679,6 +767,33 @@ def get_metrics():
         'recovery_target': transfer_state.get('recovery_target'),
         'progress': transfer_state.get('progress', 0),
     })
+
+
+@app.route('/api/storage', methods=['GET'])
+def get_storage():
+    """Per-server storage quota and usage, recomputed from disk."""
+    return jsonify(_storage_snapshot())
+
+
+@app.route('/api/storage', methods=['POST'])
+def set_storage():
+    """Set a server's storage quota (MB). host in {h3, h4}, quota_mb >= 0 (0 = unlimited)."""
+    data = request.get_json(force=True, silent=True) or {}
+    host = data.get('host')
+    if host not in ('h3', 'h4'):
+        return jsonify({'error': 'Invalid host: must be h3 or h4'}), 400
+    try:
+        quota_mb = int(data.get('quota_mb', 0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'quota_mb must be an integer'}), 400
+    if quota_mb < 0:
+        return jsonify({'error': 'quota_mb must be >= 0'}), 400
+    quotas = _load_storage_quotas()
+    quotas[host] = quota_mb
+    _save_storage_quotas(quotas)
+    log_event(f'[STORAGE] Quota set for {host}: {quota_mb} MB (0 = unlimited)')
+    return jsonify({'host': host, 'quota_mb': quota_mb,
+                    'used_mb': _used_mb(host)})
 
 
 @socketio.on('connect')

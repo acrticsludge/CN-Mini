@@ -325,6 +325,16 @@ def _can_connect(addr, timeout=1):
         return False
 
 
+def _is_storage_error(result):
+    """True when the client aborted because the target server cannot store the file.
+
+    The server is up (reachable) but its disk is full / read-only, so retrying on
+    it would only fail again. Fail straight to the backup server from chunk 0.
+    """
+    error = result.get('error') or ''
+    return 'Server storage error' in error
+
+
 def _sleep_cancel(seconds, request_id):
     end = time.time() + seconds
     while time.time() < end:
@@ -414,6 +424,27 @@ def process_request(request):
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': 'File not found'}
 
+    # Honor the server host the dashboard chose (e.g. after auto-routing
+    # around a full target). h3 -> SERVERS[0], h4 -> SERVERS[1], positional so
+    # runtime BACKUP_SERVERS overrides are honored without a hard-coded name map.
+    # A requested host that isn't configured is rejected rather than silently
+    # falling back to the other address.
+    host = request.get('host')
+    servers = SERVERS
+    if host == 'h3':
+        if not servers:
+            return {'filename': filename, 'request_id': request_id,
+                    'status': 'failed',
+                    'error': 'No backup servers configured'}
+        servers = [servers[0]]
+    elif host == 'h4':
+        if len(servers) < 2:
+            return {'filename': filename, 'request_id': request_id,
+                    'status': 'failed',
+                    'error': 'Backup server h4 not configured'}
+        servers = [servers[1]]
+    # No host field -> use the full configured server order.
+
     clear_transfer_files()
     # Pickup marker BEFORE the client runs: the dashboard's busy check must see
     # this run from the moment it is claimed, not from the first [PROGRESS]
@@ -423,9 +454,9 @@ def process_request(request):
                                 'throughput': 0.0, 'phase': 'running',
                                 'attempt': 1, 'max_attempts': 2,
                                 'resume_from': resume_from,
-                                'server': server_name(SERVERS[0])})
+                                'server': server_name(servers[0])})
     try:
-        first = run_client(filename, filepath, request_id,
+        first = run_client(filename, filepath, request_id, servers=servers,
                            resume_from=resume_from)
     except Exception as e:
         return {'filename': filename, 'request_id': request_id,
@@ -433,10 +464,47 @@ def process_request(request):
 
     first['attempts'] = 1
     first['resumed_from'] = resume_from
-    if first['status'] != 'failed' or first.get('resume_point') is None:
+    storage_error = _is_storage_error(first)
+    if first['status'] != 'failed' or (first.get('resume_point') is None
+                                       and not storage_error):
         _write_terminal_progress(filename, request_id, last=first,
                                  phase=first['status'])
         return first
+
+    # A storage-full error means the target server is up but cannot store the
+    # file. Do not wait for it or retry on it — fail straight to the backup
+    # server (the positional opposite of the failed one), starting at chunk 0.
+    if storage_error:
+        server = first.get('server') or server_name(SERVERS[0])
+        addr = first.get('server_addr') or SERVERS[0]
+        try:
+            failed_idx = SERVERS.index(addr)
+        except ValueError:
+            failed_idx = 0
+        backup_idx = 1 if failed_idx == 0 else 0
+        if backup_idx >= len(SERVERS):
+            # No alternate server to fail over to; report and fail the run.
+            emit_event(f'[STORAGE] {server} storage full and no alternate '
+                       f'server configured — cannot store {filename}')
+            _write_terminal_progress(filename, request_id, last=first,
+                                     phase=first['status'])
+            return first
+        backup = SERVERS[backup_idx]
+        backup_name = server_name(backup)
+        emit_event(f'[FAILOVER] {server} storage full; restarting on '
+                   f'{backup_name} from chunk 0')
+        _write_retry_progress(filename, request_id, first, 'failover', 2, 0,
+                              backup_name)
+        second = run_client(filename, filepath, request_id, servers=[backup],
+                            resume_from=0, attempt=2)
+        second['attempts'] = 2
+        second['resumed_from'] = 0
+        second['server'] = backup_name
+        second['restarted_on_backup'] = second['status'] == 'done'
+        second['downtime_s'] = 0.0
+        _write_terminal_progress(filename, request_id, last=second,
+                                 phase=second['status'])
+        return second
 
     fail_at = time.time()
     server = first.get('server') or server_name(SERVERS[0])
