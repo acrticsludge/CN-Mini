@@ -4,7 +4,7 @@ This report covers failures that threaten a backup itself: the server dying, the
 
 The focus is on cases a user can describe in one sentence. Protocol fuzzing, route flaps, and dashboard security are out of scope.
 
-Case 1-5 are implemented. Cases 6-8 are still planned.
+Case 1-5 and 7-8 are implemented. Case 6 is implemented client-side.
 
 ## Current baseline
 
@@ -21,12 +21,12 @@ Those four facts explain most of the gaps below.
 |---|---|---|---|---|
 | 1 | Server dies mid-transfer | High | M | Implemented (retry + failover) |
 | 2 | Sender crashes mid-transfer | Medium | S/M | Implemented (resume prompt) |
-| 3 | Failed re-backup destroys the last good copy | High | S | Implemented (.part + atomic promote) |
-| 4 | Server storage full or read-only | Medium | S | Implemented (MSG_ERROR, quota) |
-| 5 | Two clients write the same filename | High | S/M | Implemented (file busy rejection) |
-| 6 | Source changes during the backup | Medium | S | Not detected |
-| 7 | Done, but the file isn't stored | High | S | Not verified |
-| 8 | Both servers unreachable | Low | S | Works; untested |
+| 3 | Failed re-backup destroys the last good copy | High | S | Implemented (.part + atomic promote), tested |
+| 4 | Server storage full or read-only | Medium | S | Implemented (MSG_ERROR, quota), tested |
+| 5 | Two clients write the same filename | High | S/M | Implemented (file busy rejection), tested |
+| 6 | Source changes during the backup | Medium | S | Implemented client-side (size+mtime check), tested |
+| 7 | Done, but the file isn't stored | High | S | Implemented (dashboard verification), tested |
+| 8 | Both servers unreachable | Low | S | Implemented (clear failure reason), tested |
 
 ---
 
@@ -190,15 +190,9 @@ The full design, including the dashboard button and topology animation, is in [s
 
 **Scenario.** Someone edits `report.csv` while it is being sent. Each chunk is valid, so the stored file is half old and half new.
 
-**Today.** Each chunk's CRC is checked on its own. There is no file-level check.
+**Today.** Implemented client-side: the client records `st_size` and `st_mtime_ns` before the first chunk and re-checks after the last. If either changed, it prints `[INCONSISTENT] Source changed during backup` and exits 1. The bridge surfaces that line as the failure reason.
 
-**Target.** Record `st_size` and `st_mtime_ns` before the first chunk; re-check after the last. If either changed, print `[INCONSISTENT] Source changed during backup` and exit 1.
-
-**Implementation notes.**
-
-- `client/client.py`: `os.stat` before and after.
-- `mininet/bridge.py`: surface the `[INCONSISTENT]` line as the failure reason.
-- Caveat: mtime can be coarse. If the size is unchanged and the edit lands in the same tick, the check can miss it. Say so. A hash before and after is stronger but reads the file twice.
+Caveat: mtime can be coarse. If the size is unchanged and the edit lands in the same tick, the check can miss it. A hash before and after is stronger but reads the file twice.
 
 **Tests.**
 
@@ -245,9 +239,7 @@ The full design, including the dashboard button and topology animation, is in [s
 
 **Scenario.** h3 and h4 are both down.
 
-**Today.** The client tries each with a 10 s connect timeout, fails after up to about 20 s, and exits 1. The bridge shows the last connect error. The behavior is reasonable, but no test pins it.
-
-**Target.** Keep the behavior, add a final `[CLIENT] No backup server reachable`, and test it.
+**Today.** Implemented: the client tries each configured server, and when none answers it prints `[CLIENT] No backup server reachable` and exits 1. The bridge surfaces that line as the failure reason, so the dashboard reports "no server is reachable" rather than a generic timeout. No partial file is created.
 
 **Tests.**
 
@@ -255,9 +247,9 @@ The full design, including the dashboard button and topology animation, is in [s
 
 **Acceptance.**
 
-- [ ] The run fails in about 20 s, not 60 s.
-- [ ] The dashboard says no server is reachable.
-- [ ] No partial file is created.
+- [x] The run fails in about 20 s, not 60 s.
+- [x] The dashboard says no server is reachable.
+- [x] No partial file is created.
 
 ---
 
@@ -265,7 +257,7 @@ The full design, including the dashboard button and topology animation, is in [s
 
 | File | New tests | Needs Mininet? |
 |---|---|---|
-| `tests/test_edge_cases.py` (new) | server restart, lost ACK, storage full, file busy, source changed, both servers down | No |
+| `tests/test_edge_cases.py` | server restart, lost ACK, storage full, file busy, source changed, both servers down, rebackup safety, verification | No |
 | `tests/test_recovery.py` | resume after restart, failover start-from-zero | No |
 | `tests/test_bridge_request.py` | retry loop, resume point parsing | No |
 | `tests/test_dashboard_busy.py` | partial info, stored-file verification | No |

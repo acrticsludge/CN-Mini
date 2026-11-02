@@ -87,3 +87,24 @@ Manual link-failure check: kill s1-s2 mid-transfer, confirm the bridge stays ali
 - `test_client_labels_busy_error` — the client prints `[CLIENT] File busy: ...`, not `Server storage error`, so the bridge does not treat a busy file as a full disk.
 - `test_server_rejects_part_suffixed_filename` — a source named `x.part` is refused with `code=invalid`, so it cannot collide with the temp path for `x`.
 - `test_dashboard_hides_and_rejects_part_sources` — the picker hides `.part` names and `/api/start-transfer` returns 400 for them.
+
+## Failed re-backup keeps previous file (edge case 3)
+
+`tests/test_edge_cases.py` covers:
+
+- `test_failed_rebackup_keeps_previous_file` — the server writes to `.part` and promotes only after the last chunk; a kill mid-transfer leaves the final copy byte-identical and only a `.part` remains.
+- `test_successful_rebackup_replaces_previous_file` — a successful re-backup replaces the previous file in one atomic step.
+- `test_part_file_hidden_from_stored_list` — the dashboard `/api/files` hides `.part` names.
+
+## Source changes during backup (edge case 6)
+
+`tests/test_edge_cases.py` covers:
+
+- `test_source_changed_during_transfer_is_rejected` — a fake server delays the first ACK, the source is mutated mid-transfer, and the client exits with `[INCONSISTENT] Source changed during backup` instead of reporting success.
+- `test_unchanged_source_completes` — an unchanged source completes and is stored correctly.
+
+## Both servers unreachable (edge case 8)
+
+`tests/test_edge_cases.py` covers:
+
+- `test_both_servers_unreachable_reports_clear_reason` — with nothing listening, the client prints `[CLIENT] No backup server reachable`, exits 1, and creates no partial file.

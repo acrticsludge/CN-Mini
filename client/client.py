@@ -52,6 +52,7 @@ class BackupClient:
                 if self.sock:
                     self.sock.close()
                 self.sock = None
+        print("[CLIENT] No backup server reachable")
         return False
 
     def send_file(self, filepath, resume_from=0):
@@ -63,6 +64,20 @@ class BackupClient:
         filename = os.path.basename(filepath)
         file_size = os.path.getsize(filepath)
         total_chunks = (file_size + self.chunk_size - 1) // self.chunk_size
+
+        # Record the source's size and mtime before the first chunk so we can
+        # detect a file that was edited while it was being sent. Each chunk's
+        # CRC is checked on its own, so a half-old/half-new file would pass
+        # every per-chunk check without this file-level guard.
+        try:
+            start_stat = os.stat(filepath)
+        except OSError:
+            start_stat = None
+        if start_stat is not None:
+            start_size = start_stat.st_size
+            start_mtime_ns = start_stat.st_mtime_ns
+        else:
+            start_size = start_mtime_ns = None
         if not self.connected:
             if not self.connect():
                 return False
@@ -112,7 +127,23 @@ class BackupClient:
 
         if accepted_start > 0 and self.last_ack < accepted_start - 1:
             self.last_ack = accepted_start - 1
-        return self._send_chunks(filepath, accepted_start, total_chunks)
+        ok = self._send_chunks(filepath, accepted_start, total_chunks)
+
+        # Case 6: if the source changed size or mtime during the transfer, the
+        # stored file is half old and half new even though every chunk's CRC
+        # passed. Reject the run instead of reporting success.
+        if ok and start_stat is not None:
+            try:
+                end_stat = os.stat(filepath)
+            except OSError:
+                end_stat = None
+            if end_stat is not None and (
+                    end_stat.st_size != start_size
+                    or end_stat.st_mtime_ns != start_mtime_ns):
+                print("[INCONSISTENT] Source changed during backup")
+                ok = False
+
+        return ok
 
     def _send_chunks(self, filepath, start_chunk, total_chunks):
         """Send file chunks from start_chunk to total_chunks. Returns True on success."""

@@ -669,3 +669,194 @@ def test_done_result_without_stored_file_is_flagged(dash):
     assert 'verification_error' in dash.transfer_state
     log = event_text(dash)
     assert '[VERIFY] missing.bin done but no stored copy on h3/h4' in log, log
+
+
+def test_source_changed_during_transfer_is_rejected(tmp_path, capsys):
+    """A source edited mid-transfer fails with [INCONSISTENT], not success.
+
+    Uses a fake server that delays the first ACK, giving the mutation a
+    deterministic window to fire between the client's initial stat and its
+    final stat.
+    """
+    from client.client import BackupClient
+    from common.protocol import (CHUNK_SIZE, MSG_HELLO, MSG_DATA, MSG_ACK,
+                                  pack_hello, pack_data, pack_ack)
+    from common.transport import recv_frame
+    from common.checksum import compute_crc32
+
+    port = _free_port()
+    payload = tmp_path / 'report.csv'
+    content = b'x' * (CHUNK_SIZE * 2)
+    payload.write_bytes(content)
+
+    ready = threading.Event()
+
+    def fake_server():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', port))
+        srv.listen(1)
+        srv.settimeout(5)
+        ready.set()
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            # HELLO
+            frame = recv_frame(conn)
+            assert frame['type'] == MSG_HELLO
+            # Delay the ready ACK so the mutation lands mid-transfer.
+            time.sleep(0.2)
+            conn.sendall(pack_ack(0))
+            # Chunk 0: mutate the source while the client is mid-transfer.
+            frame = recv_frame(conn)
+            assert frame['type'] == MSG_DATA
+            payload.write_bytes(b'y' * (CHUNK_SIZE * 3))
+            conn.sendall(pack_ack(frame['index']))
+            # Chunk 1.
+            frame = recv_frame(conn)
+            assert frame['type'] == MSG_DATA
+            conn.sendall(pack_ack(frame['index']))
+        srv.close()
+
+    thread = threading.Thread(target=fake_server, daemon=True)
+    thread.start()
+    assert ready.wait(5)
+
+    client = BackupClient([('127.0.0.1', port)],
+                          connect_timeout=5, transfer_timeout=10)
+    try:
+        ok = client.send_file(str(payload))
+    finally:
+        client.close()
+        thread.join(timeout=5)
+
+    assert ok is False
+    out = capsys.readouterr().out
+    assert '[INCONSISTENT] Source changed during backup' in out, out
+
+
+def test_unchanged_source_completes(tmp_path):
+    """An unchanged source completes and is stored correctly."""
+    from client.client import BackupClient
+    from common.protocol import CHUNK_SIZE
+    from server.server import BackupServer
+
+    port = _free_port()
+    store = tmp_path / 'h4'
+    store.mkdir()
+    srv = BackupServer(host='127.0.0.1', port=port, storage_dir=str(store))
+    threading.Thread(target=srv.start, daemon=True).start()
+    time.sleep(0.3)
+
+    payload = tmp_path / 'report.csv'
+    content = b'x' * (CHUNK_SIZE * 2)
+    payload.write_bytes(content)
+
+    client = BackupClient([('127.0.0.1', port)])
+    try:
+        assert client.send_file(str(payload)) is True
+    finally:
+        client.close()
+        srv.stop()
+
+    assert (store / 'report.csv').read_bytes() == content
+
+
+def test_failed_rebackup_keeps_previous_file(tmp_path):
+    """A failed re-backup leaves the previous file byte-identical.
+
+    The server writes to .part and promotes only after the last chunk, so a
+    kill mid-transfer leaves the final copy untouched.
+    """
+    from client.client import BackupClient
+    from common.protocol import CHUNK_SIZE, MSG_HELLO, MSG_ACK, pack_hello
+    from common.transport import recv_frame
+    import struct
+    from common.checksum import compute_crc32
+    from common.protocol import pack_data
+
+    port, store = _serve(tmp_path, 'h4', quota_mb=None)
+    previous = store / 'thesis.docx'
+    previous.write_bytes(b'Y' * (CHUNK_SIZE * 2))
+
+    payload = tmp_path / 'thesis.docx'
+    payload.write_bytes(b'Z' * (CHUNK_SIZE * 2))  # 2 chunks; only send 1
+
+    client = BackupClient([('127.0.0.1', port)])
+    try:
+        # Kill mid-transfer: send chunk 0, then close without chunk 1.
+        sock = socket.create_connection(('127.0.0.1', port), timeout=5)
+        from common.protocol import MSG_HELLO, MSG_ACK, pack_hello
+        from common.transport import recv_frame
+        sock.sendall(pack_hello('thesis.docx', len(payload.read_bytes())))
+        assert recv_frame(sock)['type'] == MSG_ACK
+        # send chunk 0 then hang up
+        import struct
+        from common.checksum import compute_crc32
+        from common.protocol import pack_data
+        chunk = payload.read_bytes()[:CHUNK_SIZE]
+        sock.sendall(pack_data(0, 1, chunk, compute_crc32(chunk)))
+        recv_frame(sock)  # ACK for chunk 0
+        sock.close()
+    finally:
+        client.close()
+
+    # The previous file is byte-identical; only a .part remains.
+    assert previous.read_bytes() == b'Y' * (CHUNK_SIZE * 2)
+    assert (store / 'thesis.docx.part').exists()
+
+
+def test_successful_rebackup_replaces_previous_file(tmp_path):
+    """A successful re-backup replaces the previous file in one step."""
+    from client.client import BackupClient
+    from common.protocol import CHUNK_SIZE
+
+    port, store = _serve(tmp_path, 'h4', quota_mb=None)
+    previous = store / 'thesis.docx'
+    previous.write_bytes(b'Y' * (CHUNK_SIZE * 2))
+
+    payload = tmp_path / 'thesis.docx'
+    payload.write_bytes(b'Z' * (CHUNK_SIZE * 3))
+
+    client = BackupClient([('127.0.0.1', port)])
+    try:
+        assert client.send_file(str(payload)) is True
+    finally:
+        client.close()
+
+    assert previous.read_bytes() == b'Z' * (CHUNK_SIZE * 3)
+    assert not (store / 'thesis.docx.part').exists()
+
+
+def test_part_file_hidden_from_stored_list(dash):
+    """The dashboard picker hides .part files from stored listings."""
+    client = dash.app.test_client()
+    with open(os.path.join(dash.STORED_DIR, 'h3', 'real.bin'), 'wb') as f:
+        f.write(b'x' * 100)
+    with open(os.path.join(dash.STORED_DIR, 'h3', 'real.bin.part'), 'wb') as f:
+        f.write(b'x' * 50)
+
+    names = [f['name'] for f in client.get('/api/files').get_json()['h3']]
+    assert 'real.bin' in names
+    assert 'real.bin.part' not in names
+
+
+def test_both_servers_unreachable_reports_clear_reason(tmp_path):
+    """All servers down: run fails fast with a clear reason, no partial file."""
+    from client.client import BackupClient
+    from common.protocol import CHUNK_SIZE
+
+    payload = tmp_path / 'a.bin'
+    payload.write_bytes(b'x' * (CHUNK_SIZE * 2))
+
+    # Nothing listening: two connect attempts fail fast.
+    client = BackupClient([('127.0.0.1', 1), ('127.0.0.1', 2)],
+                          connect_timeout=0.2)
+    try:
+        ok = client.send_file(str(payload))
+    finally:
+        client.close()
+
+    assert ok is False
