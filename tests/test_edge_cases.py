@@ -281,6 +281,51 @@ def test_partial_mb_usage_routes_over_quota(dash):
     assert req['host'] == 'h4', req  # h3 has too little free space
 
 
+def test_bridge_blocks_failover_when_backup_lacks_space(tmp_path):
+    """Runtime storage failover must not send to a backup server with too little
+    free space. process_request should fail the run instead."""
+    bridge = _load_bridge('bridge_edge4_no_backup_space_under_test', BRIDGE_SPEC)
+    shared = str(tmp_path / 'shared')
+    os.makedirs(shared, exist_ok=True)
+    bridge.SHARED_DIR = shared
+    bridge.REQUEST_FILE = os.path.join(shared, 'transfer_request.json')
+    bridge.RESULT_FILE = os.path.join(shared, 'transfer_result.json')
+    bridge.PROGRESS_FILE = os.path.join(shared, 'transfer_progress.json')
+    bridge.EVENTS_FILE = os.path.join(shared, 'transfer_events.json')
+    bridge.CANCEL_FILE = os.path.join(shared, 'transfer_cancel.json')
+    bridge.LOCK_FILE = os.path.join(shared, 'bridge.lock')
+    bridge.ALIVE_FILE = os.path.join(shared, 'bridge_alive.json')
+    bridge.SERVERS = ['10.0.0.3:9000', '10.0.0.4:9000']
+    bridge.SERVER_STORAGE_FILE = os.path.join(shared, 'server_storage.json')
+
+    captured = []
+
+    def fake_run_client(filename, filepath, request_id=None, servers=None,
+                        resume_from=0, attempt=1):
+        captured.append(list(servers or []))
+        return {'filename': filename, 'request_id': request_id,
+                'status': 'failed',
+                'error': '[CLIENT] Server storage error: disk full',
+                'resume_point': None}
+
+    bridge.run_client = fake_run_client
+
+    # h3 full (quota 1 MB), h4 also too small (quota 1 MB), file needs 10 MB.
+    with open(bridge.SERVER_STORAGE_FILE, 'w') as f:
+        json.dump({'h3': {'quota_mb': 1, 'used_mb': 0},
+                   'h4': {'quota_mb': 1, 'used_mb': 0}}, f)
+    with open(os.path.join(shared, 'a.bin'), 'wb') as f:
+        f.write(b'x' * (10 * MB))
+
+    # First attempt fails with storage error on h3.
+    res = bridge.process_request({'filename': 'a.bin', 'request_id': 'r1',
+                                  'host': 'h3'})
+    assert res['status'] == 'failed', res
+    # Failover to h4 must be blocked (h4 also too small): run_client must
+    # never be called with h4's address.
+    assert ['10.0.0.4:9000'] not in captured, captured
+
+
 def test_mid_transfer_quota_change_no_effect(dash):
     """Quota change mid-run does not re-route an already-queued transfer."""
     client = dash.app.test_client()

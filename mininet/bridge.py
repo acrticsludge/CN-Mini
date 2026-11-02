@@ -55,6 +55,7 @@ HEARTBEAT_INTERVAL = float(os.environ.get('BRIDGE_HEARTBEAT_INTERVAL', '2'))
 # unknown, not proof either way.
 SERVER_STATUS_FILE = os.path.join(SHARED_DIR, 'server_status.json')
 SERVER_STATUS_MAX_AGE = 10.0
+SERVER_STORAGE_FILE = os.path.join(SHARED_DIR, 'server_storage.json')
 # A reachable-server path can lag the controller's new route while STP unblocks
 # the alternate links. Do not call the backup server dead after two TCP probes.
 LINK_RECOVERY_WAIT = float(os.environ.get('BRIDGE_LINK_RECOVERY_WAIT', '60'))
@@ -335,6 +336,39 @@ def _is_storage_error(result):
     return 'Server storage error' in error
 
 
+def _server_free_bytes(host):
+    """Return free bytes for a host from server_storage.json.
+
+    None means unlimited (quota 0) or unknown. Computed from the persisted
+    quota_mb and used_mb so the bridge can refuse a failover to a server that
+    cannot actually hold the file.
+    """
+    try:
+        data = _read_json(SERVER_STORAGE_FILE)
+    except Exception:
+        return None
+    if not data:
+        return None
+    entry = data.get(host)
+    if not entry:
+        return None
+    if isinstance(entry, dict):
+        quota = entry.get('quota_mb')
+        used = entry.get('used_mb', 0)
+    else:
+        # Old flat format {host: quota_mb}.
+        quota = entry
+        used = 0
+    try:
+        quota = int(quota)
+        used = int(used)
+    except (TypeError, ValueError):
+        return None
+    if quota == 0:
+        return None  # unlimited
+    return max(quota * 1024 * 1024 - used * 1024 * 1024, 0)
+
+
 def _sleep_cancel(seconds, request_id):
     end = time.time() + seconds
     while time.time() < end:
@@ -423,6 +457,7 @@ def process_request(request):
     if not os.path.isfile(filepath):
         return {'filename': filename, 'request_id': request_id,
                 'status': 'failed', 'error': 'File not found'}
+    file_size = os.path.getsize(filepath)
 
     # Honor the server host the dashboard chose (e.g. after auto-routing
     # around a full target). h3 -> SERVERS[0], h4 -> SERVERS[1], positional so
@@ -491,6 +526,16 @@ def process_request(request):
             return first
         backup = SERVERS[backup_idx]
         backup_name = server_name(backup)
+        backup_free = _server_free_bytes(backup_name)
+        if backup_free is not None and file_size > backup_free:
+            # The backup server also lacks room. Fail the run instead of
+            # writing a file larger than its quota.
+            emit_event(f'[STORAGE] {backup_name} also lacks space for '
+                       f'{filename} (need {file_size} bytes, '
+                       f'have {backup_free} bytes)')
+            _write_terminal_progress(filename, request_id, last=first,
+                                     phase=first['status'])
+            return first
         emit_event(f'[FAILOVER] {server} storage full; restarting on '
                    f'{backup_name} from chunk 0')
         _write_retry_progress(filename, request_id, first, 'failover', 2, 0,
@@ -556,6 +601,14 @@ def process_request(request):
     if server == server_name(backup):
         backup = SERVERS[0]
     backup_name = server_name(backup)
+    backup_free = _server_free_bytes(backup_name)
+    if backup_free is not None and file_size > backup_free:
+        emit_event(f'[STORAGE] {backup_name} also lacks space for '
+                   f'{filename} (need {file_size} bytes, '
+                   f'have {backup_free} bytes)')
+        _write_terminal_progress(filename, request_id, last=first,
+                                 phase=first['status'])
+        return first
     if waited_for_path:
         emit_event(f'[FAILOVER] {server} stayed unreachable after path wait; '
                    f'restarting on {backup_name} from chunk 0')

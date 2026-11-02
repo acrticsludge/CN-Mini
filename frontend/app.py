@@ -203,14 +203,28 @@ DEFAULT_QUOTA_MB = 1000
 
 
 def _load_storage_quotas():
-    """Return {host: quota_mb} for h3/h4, falling back to the default."""
+    """Return {host: {'quota_mb': q, 'used_mb': u}} for h3/h4.
+
+    Accepts the old flat format {host: quota_mb} for backwards compatibility.
+    """
     data = _read_json(SERVER_STORAGE_FILE) or {}
     quotas = {}
     for host in ('h3', 'h4'):
-        try:
-            quotas[host] = int(data.get(host, DEFAULT_QUOTA_MB))
-        except (TypeError, ValueError):
-            quotas[host] = DEFAULT_QUOTA_MB
+        entry = data.get(host)
+        if isinstance(entry, dict):
+            try:
+                quotas[host] = {
+                    'quota_mb': int(entry.get('quota_mb', DEFAULT_QUOTA_MB)),
+                    'used_mb': int(entry.get('used_mb', 0)),
+                }
+            except (TypeError, ValueError):
+                quotas[host] = {'quota_mb': DEFAULT_QUOTA_MB, 'used_mb': 0}
+        else:
+            try:
+                q = int(entry if entry is not None else DEFAULT_QUOTA_MB)
+            except (TypeError, ValueError):
+                q = DEFAULT_QUOTA_MB
+            quotas[host] = {'quota_mb': q, 'used_mb': 0}
     return quotas
 
 
@@ -244,7 +258,7 @@ def _storage_snapshot():
     out = {}
     for host in ('h3', 'h4'):
         used = _used_mb(host)
-        quota = quotas[host]
+        quota = quotas[host]['quota_mb']
         free = None if quota == 0 else max(quota - used, 0)
         out[host] = {'quota_mb': quota, 'used_mb': used, 'free_mb': free}
     return out
@@ -789,7 +803,7 @@ def set_storage():
     if quota_mb < 0:
         return jsonify({'error': 'quota_mb must be >= 0'}), 400
     quotas = _load_storage_quotas()
-    quotas[host] = quota_mb
+    quotas[host] = {'quota_mb': quota_mb, 'used_mb': _used_mb(host)}
     _save_storage_quotas(quotas)
     log_event(f'[STORAGE] Quota set for {host}: {quota_mb} MB (0 = unlimited)')
     return jsonify({'host': host, 'quota_mb': quota_mb,
